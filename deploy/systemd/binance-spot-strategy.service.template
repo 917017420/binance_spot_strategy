@@ -1,0 +1,23 @@
+[Unit]
+Description=Binance Spot Strategy resident runtime
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__REPO_DIR__
+Environment="BINANCE_STRATEGY_RUNTIME_ENV_FILE=__RUNTIME_ENV_FILE__"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-__RUNTIME_ENV_FILE__
+ExecStart=__REPO_DIR__/scripts/systemd_runtime.sh start
+ExecStop=__REPO_DIR__/scripts/systemd_runtime.sh stop
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=125
+NoNewPrivileges=true
+SyslogIdentifier=__SERVICE_NAME__
+
+[Install]
+WantedBy=multi-user.target

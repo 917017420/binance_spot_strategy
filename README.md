@@ -151,6 +151,60 @@ python3 -m src.main control-plane-brief
 
 `runtime-start` is intentionally foreground and is meant to be supervised by `tmux`, `systemd`, `nohup`, or a similar process supervisor.
 
+## systemd service setup
+
+This repo now includes a first-pass `systemd` setup under `deploy/systemd/` plus helper scripts in `scripts/`.
+
+Use `scripts/install_systemd_service.sh` to render a concrete unit file and matching runtime env file:
+
+```bash
+sudo ./scripts/install_systemd_service.sh \
+  --service-user "$USER" \
+  --service-group "$(id -gn)" \
+  --repo-dir "$(pwd)" \
+  --python "$(command -v python3)" \
+  --config "$(pwd)/config/strategy.example.yaml" \
+  --env-file "$(pwd)/.env"
+```
+
+By default this writes:
+
+- `/etc/systemd/system/binance-spot-strategy.service`
+- `/etc/binance-spot-strategy/binance-spot-strategy.env`
+
+The rendered unit keeps `runtime-start` in the foreground and uses the existing graceful runtime controls:
+
+- `ExecStart` → `scripts/systemd_runtime.sh start` → `python3 -m src.main runtime-start ...`
+- `ExecStop` → `scripts/systemd_runtime.sh stop` → `python3 -m src.main runtime-stop --wait ...`
+- `Restart=on-failure` so clean operator stops do not auto-restart, but crashes still restart under `systemd`
+
+The rendered env file sets `BINANCE_STRATEGY_CLEAR_STOP_SIGNAL=true` by default. That keeps `systemctl start` and `systemctl restart` operational after a prior graceful stop by explicitly reusing the existing `runtime-start --clear-stop-signal` flag. If you want every start to remain blocked until an operator manually clears the stop signal, set that value to `false`.
+
+Typical operator flow:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now binance-spot-strategy.service
+systemctl status binance-spot-strategy.service
+journalctl -u binance-spot-strategy.service -f
+sudo systemctl stop binance-spot-strategy.service
+```
+
+The direct runtime commands still remain the authoritative control plane view:
+
+```bash
+python3 -m src.main --config config/strategy.example.yaml --env-file .env runtime-status
+python3 -m src.main --config config/strategy.example.yaml --env-file .env control-plane-brief
+./scripts/systemd_runtime.sh clear-stop
+```
+
+Operational notes:
+
+- Keep one supervised instance only; the control plane remains file-based and single-process oriented.
+- The `systemd` unit supervises the foreground resident loop; it does not daemonize the app internally.
+- A stale runtime heartbeat still requires manual inspection before forcing restart decisions.
+- The service currently writes state under `data/execution/` in the repo, so install it on durable local storage.
+
 ## Output and local state
 
 ### Reports

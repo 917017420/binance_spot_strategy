@@ -16,4 +16,6 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
   exit 1
 fi
 
-codex --ask-for-approval never --sandbox danger-full-access exec --cd "$REPO_DIR" "$(cat "$PROMPT_FILE")"
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.3-codex}"
+
+codex --model "$CODEX_MODEL" --ask-for-approval never --sandbox danger-full-access exec --cd "$REPO_DIR" "$(cat "$PROMPT_FILE")"
