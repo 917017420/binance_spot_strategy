@@ -4,7 +4,7 @@ from src.control_plane_reconcile import reconcile_control_plane_state
 from src.live_inflight_state import load_live_inflight_state, save_live_inflight_state
 from src.models import Position
 from src.positions_store import save_positions
-from src.live_submit_state import save_live_submit_state
+from src.live_submit_state import load_live_submit_state, save_live_submit_state
 from src.runner_state import load_runner_state, save_runner_state
 from src.utils import utc_now_iso
 
@@ -173,3 +173,51 @@ def test_control_plane_reconcile_archives_stale_simulated_active_positions(tmp_p
     archive_path = tmp_path / 'archive' / 'positions_archive.jsonl'
     assert archive_path.exists() is True
     assert 'pos-paper-xrp' in archive_path.read_text(encoding='utf-8')
+
+
+def test_control_plane_reconcile_auto_archives_terminal_sell_submit_after_true_exit(tmp_path):
+    save_runner_state(
+        {
+            'last_active_trade_status': 'locked',
+            'last_active_trade_symbol': 'ADA/USDT',
+            'last_active_trade_stage': 'position_open',
+            'last_active_trade_lock_reason': 'active_open_position_exists',
+        },
+        base_dir=tmp_path,
+    )
+    save_live_inflight_state({'orders': {}, 'released': {}, 'quarantined': {}}, base_dir=tmp_path)
+    save_live_submit_state(
+        {
+            'last_client_order_id': 'cid-ada-exit',
+            'last_submit_status': 'closed',
+            'last_submit_side': 'sell',
+            'last_symbol': 'ADA/USDT',
+            'last_request': {'symbol': 'ADA/USDT', 'side': 'sell'},
+            'last_response': {'status': 'closed'},
+            'last_action_intent': 'SELL_EXIT',
+            'last_error': None,
+        },
+        base_dir=tmp_path,
+    )
+
+    result = reconcile_control_plane_state(base_dir=tmp_path)
+    runner_state = load_runner_state(base_dir=tmp_path)
+    submit_state = load_live_submit_state(base_dir=tmp_path)
+
+    assert result.ok is True
+    assert result.after_status == 'idle'
+    assert any(action.startswith('RUNNER_ACTIVE_TRADE_CLEARED') for action in result.actions)
+    assert any(action.startswith('LIVE_SUBMIT_STATE_AUTO_ARCHIVED') for action in result.actions)
+    assert runner_state['last_active_trade_status'] == 'idle'
+    assert runner_state['last_active_trade_symbol'] is None
+    assert runner_state['last_active_trade_lock_reason'] is None
+    assert submit_state['last_client_order_id'] is None
+    assert submit_state['last_submit_status'] is None
+    assert submit_state['last_submit_side'] is None
+    assert submit_state['last_symbol'] is None
+    assert submit_state['last_request'] is None
+    assert submit_state['last_response'] is None
+    assert submit_state['last_action_intent'] is None
+    assert submit_state['archived_last_submit']['archive_reason'] == 'post_exit_control_plane_cleanup'
+    assert submit_state['archived_last_submit']['last_submit_status'] == 'closed'
+    assert submit_state['archived_last_submit']['last_submit_side'] == 'sell'

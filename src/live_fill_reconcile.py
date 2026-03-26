@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from .active_trade_release_log import append_active_trade_release
 from .config import load_settings
+from .control_plane_reconcile import reconcile_control_plane_state
 from .live_inflight_state import build_live_logical_key, load_live_inflight_state, save_live_inflight_state
 from .live_position_residue import classify_live_position_residue
 from .live_submit_state import load_live_submit_state, save_live_submit_state
@@ -202,6 +203,7 @@ def _find_or_create_position(positions: list[Position], fact: LiveOrderFact) -> 
 def apply_live_order_fact(response, request, *, base_dir=None) -> LiveFillReconcileResult:
     fact = build_live_order_fact(response, request)
     actions: list[str] = []
+    post_exit_reconcile_required = False
 
     submit_state = load_live_submit_state(base_dir=base_dir)
     existing_request = submit_state.get('last_request') or {}
@@ -372,6 +374,17 @@ def apply_live_order_fact(response, request, *, base_dir=None) -> LiveFillReconc
                 base_dir=base_dir,
             )
             actions.append(f'POSITION_EXIT_RECONCILED symbol={fact.symbol} release_log={release_path}')
+            post_exit_reconcile_required = True
         save_positions(positions, base_dir=base_dir)
+
+    if post_exit_reconcile_required:
+        reconcile = reconcile_control_plane_state(base_dir=base_dir)
+        actions.extend(reconcile.actions)
+        actions.append(
+            'CONTROL_PLANE_POST_EXIT_RECONCILED '
+            f'before={reconcile.before_status} after={reconcile.after_status}'
+        )
+        submit_state = load_live_submit_state(base_dir=base_dir)
+        inflight_state = load_live_inflight_state(base_dir=base_dir)
 
     return LiveFillReconcileResult(ok=True, actions=actions, submit_state=submit_state, inflight_state=inflight_state)

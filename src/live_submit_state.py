@@ -188,25 +188,33 @@ def summarize_live_submit_state(
     }
 
 
+def archive_live_submit_state(state: dict, *, archive_reason: str) -> tuple[dict, dict | None]:
+    def _has_payload(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, dict):
+            return bool(value)
+        return value != ''
 
-def prune_clearable_live_submit_state(
-    state: dict,
-    *,
-    active_symbols: set[str] | None = None,
-    inflight_symbols: set[str] | None = None,
-    older_than_seconds: float = 1800.0,
-) -> tuple[dict, dict | None]:
-    summary = summarize_live_submit_state(
-        state,
-        active_symbols=active_symbols,
-        inflight_symbols=inflight_symbols,
-        stale_after_seconds=older_than_seconds,
+    has_live_submit_payload = any(
+        _has_payload(state.get(key))
+        for key in (
+            'last_client_order_id',
+            'last_submit_status',
+            'last_submit_side',
+            'last_symbol',
+            'last_request',
+            'last_response',
+            'last_action_intent',
+            'last_error',
+        )
     )
-    if not summary.get('should_archive'):
+    if not has_live_submit_payload:
         return state, None
 
     archived = {
         'archived_at': utc_now_iso(),
+        'archive_reason': archive_reason,
         'last_client_order_id': state.get('last_client_order_id'),
         'last_submit_status': state.get('last_submit_status'),
         'last_submit_side': state.get('last_submit_side'),
@@ -230,3 +238,22 @@ def prune_clearable_live_submit_state(
         'last_error': None,
     }
     return next_state, archived
+
+
+def prune_clearable_live_submit_state(
+    state: dict,
+    *,
+    active_symbols: set[str] | None = None,
+    inflight_symbols: set[str] | None = None,
+    older_than_seconds: float = 1800.0,
+) -> tuple[dict, dict | None]:
+    summary = summarize_live_submit_state(
+        state,
+        active_symbols=active_symbols,
+        inflight_symbols=inflight_symbols,
+        stale_after_seconds=older_than_seconds,
+    )
+    if not summary.get('should_archive'):
+        return state, None
+
+    return archive_live_submit_state(state, archive_reason='stale_terminal_submit_state')

@@ -9,6 +9,7 @@ from src.live_submit_state import load_live_submit_state, summarize_live_submit_
 from src.live_inflight_state import load_live_inflight_state
 from src.models import Position
 from src.positions_store import classify_position_truth_domain, load_active_positions, load_live_active_positions, load_positions, save_positions
+from src.runner_state import load_runner_state, save_runner_state
 from src.utils import utc_now_iso
 
 
@@ -224,7 +225,7 @@ def test_apply_live_order_fact_closed_buy_is_active_position_management_not_term
     assert summary['should_archive'] is False
 
 
-def test_apply_live_order_fact_sell_exit_remains_terminal_after_position_closes(tmp_path):
+def test_apply_live_order_fact_true_sell_exit_auto_cleans_control_plane_residue(tmp_path):
     buy_request = SimpleNamespace(
         symbol='ADA/USDT',
         side='buy',
@@ -242,6 +243,15 @@ def test_apply_live_order_fact_sell_exit_remains_terminal_after_position_closes(
         raw={'status': 'filled', 'average': 0.8},
     )
     apply_live_order_fact(buy_response, buy_request, base_dir=tmp_path)
+    save_runner_state(
+        {
+            'last_active_trade_status': 'locked',
+            'last_active_trade_symbol': 'ADA/USDT',
+            'last_active_trade_stage': 'position_open',
+            'last_active_trade_lock_reason': 'active_open_position_exists',
+        },
+        base_dir=tmp_path,
+    )
 
     sell_request = SimpleNamespace(
         symbol='ADA/USDT',
@@ -264,14 +274,104 @@ def test_apply_live_order_fact_sell_exit_remains_terminal_after_position_closes(
 
     assert result.ok is True
     assert load_live_active_positions(base_dir=tmp_path) == []
+    assert load_live_inflight_state(base_dir=tmp_path)['orders'] == {}
 
-    summary = summarize_live_submit_state(load_live_submit_state(base_dir=tmp_path))
-    assert summary['status'] == 'closed'
-    assert summary['submit_side'] == 'sell'
-    assert summary['classification'] == 'terminal_residue'
-    assert summary['order_terminality'] == 'terminal'
-    assert summary['flow_terminality'] == 'terminal'
-    assert summary['flow_reason'] == 'terminal_sell_flow_without_active_position'
+    submit_state = load_live_submit_state(base_dir=tmp_path)
+    assert submit_state['last_client_order_id'] is None
+    assert submit_state['last_submit_status'] is None
+    assert submit_state['last_submit_side'] is None
+    assert submit_state['last_symbol'] is None
+    assert submit_state['last_request'] is None
+    assert submit_state['last_response'] is None
+    assert submit_state['last_action_intent'] is None
+    assert submit_state['archived_last_submit']['archive_reason'] == 'post_exit_control_plane_cleanup'
+    assert submit_state['archived_last_submit']['last_submit_status'] == 'closed'
+    assert submit_state['archived_last_submit']['last_submit_side'] == 'sell'
+    assert submit_state['archived_last_submit']['last_symbol'] == 'ADA/USDT'
+
+    summary = summarize_live_submit_state(submit_state)
+    assert summary['status'] is None
+    assert summary['submit_side'] is None
+    assert summary['classification'] == 'empty'
+    assert summary['flow_terminality'] == 'none'
+
+    runner_state = load_runner_state(base_dir=tmp_path)
+    assert runner_state['last_active_trade_status'] == 'idle'
+    assert runner_state['last_active_trade_symbol'] is None
+    assert runner_state['last_active_trade_stage'] == 'none'
+    assert runner_state['last_active_trade_lock_reason'] is None
+
+    state = build_single_active_trade_state(base_dir=tmp_path)
+    assert state.status == 'idle'
+    assert any(action.startswith('LIVE_SUBMIT_STATE_AUTO_ARCHIVED') for action in result.actions)
+    assert any(action.startswith('CONTROL_PLANE_POST_EXIT_RECONCILED') for action in result.actions)
+
+
+def test_apply_live_order_fact_sell_submit_open_does_not_cleanup_before_true_exit(tmp_path):
+    buy_request = SimpleNamespace(
+        symbol='ADA/USDT',
+        side='buy',
+        client_order_id='cid-ada-entry-open-exit',
+        metadata={'requested_position_size_pct': 5.0},
+    )
+    buy_response = SimpleNamespace(
+        exchange_order_id='order-ada-entry-open-exit',
+        client_order_id='cid-ada-entry-open-exit',
+        status='filled',
+        filled_base_amount=100.0,
+        filled_quote_amount=80.0,
+        average_fill_price=0.8,
+        remaining_base_amount=0.0,
+        raw={'status': 'filled', 'average': 0.8},
+    )
+    apply_live_order_fact(buy_response, buy_request, base_dir=tmp_path)
+    save_runner_state(
+        {
+            'last_active_trade_status': 'locked',
+            'last_active_trade_symbol': 'ADA/USDT',
+            'last_active_trade_stage': 'position_open',
+            'last_active_trade_lock_reason': 'active_open_position_exists',
+        },
+        base_dir=tmp_path,
+    )
+
+    sell_request = SimpleNamespace(
+        symbol='ADA/USDT',
+        side='sell',
+        client_order_id='cid-ada-exit-open',
+        metadata={'action_intent': 'SELL_EXIT'},
+    )
+    sell_response = SimpleNamespace(
+        exchange_order_id='order-ada-exit-open',
+        client_order_id='cid-ada-exit-open',
+        status='open',
+        filled_base_amount=0.0,
+        filled_quote_amount=0.0,
+        average_fill_price=None,
+        remaining_base_amount=100.0,
+        raw={'status': 'open'},
+    )
+
+    result = apply_live_order_fact(sell_response, sell_request, base_dir=tmp_path)
+
+    assert result.ok is True
+    assert len(load_live_active_positions(base_dir=tmp_path)) == 1
+    assert load_live_inflight_state(base_dir=tmp_path)['orders']['ADA/USDT|live|armed']['status'] == 'open'
+
+    submit_state = load_live_submit_state(base_dir=tmp_path)
+    assert submit_state['last_client_order_id'] == 'cid-ada-exit-open'
+    assert submit_state['last_submit_status'] == 'open'
+    assert submit_state['last_submit_side'] == 'sell'
+    assert submit_state['last_symbol'] == 'ADA/USDT'
+    assert submit_state['archived_last_submit'] is None
+
+    runner_state = load_runner_state(base_dir=tmp_path)
+    assert runner_state['last_active_trade_status'] == 'locked'
+    assert runner_state['last_active_trade_symbol'] == 'ADA/USDT'
+    assert runner_state['last_active_trade_stage'] == 'position_open'
+    assert runner_state['last_active_trade_lock_reason'] == 'active_open_position_exists'
+    assert not any(action.startswith('LIVE_SUBMIT_STATE_AUTO_ARCHIVED') for action in result.actions)
+    assert not any(action.startswith('CONTROL_PLANE_POST_EXIT_RECONCILED') for action in result.actions)
 
 
 def test_apply_live_order_fact_small_buy_below_tiny_threshold_remains_active_live_position(tmp_path):
