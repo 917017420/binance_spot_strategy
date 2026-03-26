@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from pathlib import Path
 
 from .auto_entry_gate import evaluate_auto_entry
@@ -17,6 +18,7 @@ from .reporter import write_reports
 from .route_execution_bridge import build_route_lifecycle_view
 from .route_executor import execute_route_candidate
 from .runner_recovery import reset_runner_fuse
+from .runner_state import clear_runner_stop_signal, derive_runner_runtime_status, load_runner_state, load_runner_stop_signal, runner_stop_signal_path, save_runner_stop_signal
 from .live_execution_snapshot import build_live_execution_snapshot
 from .single_active_trade_debug import describe_single_active_trade_state
 from .single_active_trade_repair import repair_single_active_trade_state
@@ -138,9 +140,28 @@ def _parse_args() -> argparse.Namespace:
     auto_loop_parser.add_argument("--action-mode", default="dry_run", choices=["dry_run", "paper", "live"], help="How executable position actions should be handled during auto cycle")
     auto_loop_parser.add_argument("--cycles", type=int, default=1, help="How many cycles to run")
     auto_loop_parser.add_argument("--sleep-seconds", type=float, default=0.0, help="Sleep seconds between cycles")
+    auto_loop_parser.add_argument("--forever", action="store_true", help="Keep running until a stop signal is requested or fuse health blocks more cycles")
+    auto_loop_parser.add_argument("--sleep-heartbeat-seconds", type=float, default=5.0, help="Heartbeat cadence while sleeping between cycles")
+
+    runtime_start_parser = subparsers.add_parser("runtime-start", help="Preferred resident runtime entrypoint; runs the auto loop in resident mode")
+    runtime_start_parser.add_argument("--action-mode", default="dry_run", choices=["dry_run", "paper", "live"], help="How executable position actions should be handled during resident runtime")
+    runtime_start_parser.add_argument("--sleep-seconds", type=float, default=60.0, help="Resident loop sleep seconds between cycles")
+    runtime_start_parser.add_argument("--sleep-heartbeat-seconds", type=float, default=5.0, help="Heartbeat cadence while sleeping between resident cycles")
+    runtime_start_parser.add_argument("--clear-stop-signal", action="store_true", help="Clear an existing stop request before starting resident runtime")
+
+    runtime_stop_parser = subparsers.add_parser("runtime-stop", help="Preferred resident runtime stop command")
+    runtime_stop_parser.add_argument("--reason", default="operator_stop", help="Reason recorded in the stop signal")
+    runtime_stop_parser.add_argument("--wait", action="store_true", help="Wait for the resident runtime to become inactive after requesting stop")
+    runtime_stop_parser.add_argument("--timeout-seconds", type=float, default=90.0, help="Maximum seconds to wait for graceful stop when --wait is used")
+    runtime_stop_parser.add_argument("--poll-seconds", type=float, default=2.0, help="Polling cadence while waiting for graceful stop")
+
+    subparsers.add_parser("runtime-status", aliases=["runtime-observe"], help="Show concise resident runtime status and operator commands")
 
     recovery_parser = subparsers.add_parser("reset-runner-fuse", help="Reset runner fuse/degraded state")
     recovery_parser.add_argument("--reason", default="manual_reset", help="Reason for reset")
+    stop_parser = subparsers.add_parser("request-runner-stop", help="Request a graceful stop for a resident auto-runner loop")
+    stop_parser.add_argument("--reason", default="operator_stop", help="Reason recorded in the stop signal")
+    subparsers.add_parser("clear-runner-stop", help="Clear a previously requested runner stop signal")
 
     subparsers.add_parser("live-execution-snapshot", help="Show aggregated live execution control-plane snapshot")
     subparsers.add_parser("single-active-trade-state", help="Show current single-active-trade lock/state")
@@ -369,6 +390,8 @@ def run_auto_runner_loop(args: argparse.Namespace) -> int:
         action_mode=args.action_mode,
         cycles=args.cycles,
         sleep_seconds=args.sleep_seconds,
+        run_forever=args.forever,
+        sleep_heartbeat_seconds=args.sleep_heartbeat_seconds,
     )
     print(result)
     for idx, cycle in enumerate(result.cycles, start=1):
@@ -377,6 +400,171 @@ def run_auto_runner_loop(args: argparse.Namespace) -> int:
         for step in cycle.steps:
             print(step)
     return 0 if result.ok else 2
+
+
+def run_runtime_start(args: argparse.Namespace) -> int:
+    if args.clear_stop_signal:
+        clear_runner_stop_signal()
+
+    stop_signal = load_runner_stop_signal()
+    if stop_signal is not None:
+        runtime = derive_runner_runtime_status(load_runner_state(), stop_signal=stop_signal)
+        print(
+            {
+                'ok': False,
+                'message': 'Resident runtime start blocked by pending stop signal; clear it first or pass --clear-stop-signal.',
+                'signal': stop_signal,
+                'runtime': runtime,
+                'recommended_command': runtime.get('commands', {}).get('clear_stop') or 'python3 -m src.main clear-runner-stop',
+            }
+        )
+        return 2
+
+    loop_args = argparse.Namespace(
+        config=args.config,
+        env_file=args.env_file,
+        action_mode=args.action_mode,
+        cycles=0,
+        sleep_seconds=args.sleep_seconds,
+        forever=True,
+        sleep_heartbeat_seconds=args.sleep_heartbeat_seconds,
+    )
+    return run_auto_runner_loop(loop_args)
+
+
+def run_runtime_stop(args: argparse.Namespace) -> int:
+    path = save_runner_stop_signal(reason=args.reason)
+    runtime = derive_runner_runtime_status(load_runner_state(), stop_signal=load_runner_stop_signal())
+    payload = {
+        'ok': True,
+        'path': str(path),
+        'signal': load_runner_stop_signal(),
+        'runtime': runtime,
+        'recommended_command': runtime.get('commands', {}).get('stop_and_wait') if not args.wait else runtime.get('commands', {}).get('observe'),
+    }
+    if not args.wait:
+        print(payload)
+        return 0
+
+    timeout_seconds = max(float(args.timeout_seconds or 0.0), 0.0)
+    poll_seconds = max(float(args.poll_seconds or 0.0), 0.25)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        runtime = derive_runner_runtime_status(load_runner_state(), stop_signal=load_runner_stop_signal())
+        if not runtime.get('loop_active'):
+            payload.update(
+                {
+                    'ok': True,
+                    'stopped': True,
+                    'timed_out': False,
+                    'runtime': runtime,
+                    'message': 'Resident runtime is no longer active after stop request.',
+                }
+            )
+            print(payload)
+            return 0
+        if runtime.get('heartbeat_stale'):
+            payload.update(
+                {
+                    'ok': False,
+                    'stopped': False,
+                    'timed_out': False,
+                    'runtime': runtime,
+                    'message': 'Stop requested, but resident runtime heartbeat is stale; inspect supervisor/process state manually.',
+                }
+            )
+            print(payload)
+            return 2
+        if time.monotonic() >= deadline:
+            payload.update(
+                {
+                    'ok': False,
+                    'stopped': False,
+                    'timed_out': True,
+                    'runtime': runtime,
+                    'message': 'Timed out waiting for resident runtime to stop gracefully.',
+                }
+            )
+            print(payload)
+            return 2
+        time.sleep(poll_seconds)
+
+
+def run_runtime_status(args: argparse.Namespace) -> int:
+    snapshot = build_live_execution_snapshot()
+    summary = snapshot.summary
+    runtime = summary.get('runtime') or derive_runner_runtime_status(load_runner_state(), stop_signal=load_runner_stop_signal())
+    current_state = summary.get('current_state') or {}
+    next_action = summary.get('next_action_plan') or {}
+
+    lines = [
+        'RUNTIME',
+        f"- status: {runtime.get('status')}",
+        f"- mode: {runtime.get('mode')}",
+        f"- action_mode: {runtime.get('last_loop_action_mode')}",
+        f"- loop_active: {runtime.get('loop_active')}",
+        f"- last_loop_started_at: {runtime.get('last_loop_started_at')}",
+        f"- last_loop_finished_at: {runtime.get('last_loop_finished_at')}",
+        f"- last_loop_exit_reason: {runtime.get('last_loop_exit_reason')}",
+        f"- last_loop_cycle_count: {runtime.get('last_loop_cycle_count')}",
+        f"- heartbeat_stale: {runtime.get('heartbeat_stale')}",
+        f"- last_heartbeat_at: {runtime.get('last_heartbeat_at')}",
+        f"- last_heartbeat_status: {runtime.get('last_heartbeat_status')}",
+        f"- heartbeat_age_seconds: {runtime.get('heartbeat_age_seconds')}",
+        f"- heartbeat_timeout_seconds: {runtime.get('heartbeat_timeout_seconds')}",
+        f"- last_successful_cycle_at: {runtime.get('last_successful_cycle_at')}",
+        f"- sleep_until_at: {runtime.get('last_loop_sleep_until_at')}",
+        f"- sleep_remaining_seconds: {runtime.get('last_loop_sleep_remaining_seconds')}",
+        f"- stop_signal_present: {runtime.get('stop_signal_present')}",
+        f"- stop_signal_reason: {runtime.get('stop_signal_reason')}",
+        f"- stop_signal_requested_at: {runtime.get('stop_signal_requested_at')}",
+        f"- stop_signal_age_seconds: {runtime.get('stop_signal_age_seconds')}",
+        f"- start_blocked_by_stop_signal: {runtime.get('start_blocked_by_stop_signal')}",
+        f"- summary: {runtime.get('summary')}",
+        f"- operator_hint: {runtime.get('operator_hint')}",
+        '',
+        'CONTROL',
+        f"- status: {current_state.get('status')}",
+        f"- active_symbol: {current_state.get('active_symbol')}",
+        f"- active_stage: {current_state.get('active_stage')}",
+        f"- active_position_under_management: {current_state.get('active_position_under_management')}",
+        f"- can_push_live_now: {current_state.get('can_push_live_now')}",
+        f"- needs_manual_intervention: {current_state.get('needs_manual_intervention')}",
+        '',
+        'COMMANDS',
+        f"- observe: {runtime.get('commands', {}).get('observe')}",
+        f"- control_plane: {runtime.get('commands', {}).get('control_plane')}",
+        f"- start: {runtime.get('commands', {}).get('start')}",
+        f"- stop: {runtime.get('commands', {}).get('stop')}",
+        f"- stop_and_wait: {runtime.get('commands', {}).get('stop_and_wait')}",
+        f"- clear_stop: {runtime.get('commands', {}).get('clear_stop')}",
+        f"- recommended_command: {next_action.get('recommended_command') or runtime.get('recommended_command')}",
+    ]
+    print('\n'.join(lines))
+    return 0
+
+
+def run_request_runner_stop(args: argparse.Namespace) -> int:
+    path = save_runner_stop_signal(reason=args.reason)
+    print(
+        {
+            'ok': True,
+            'path': str(path),
+            'signal': load_runner_stop_signal(),
+        }
+    )
+    return 0
+
+
+def run_clear_runner_stop(args: argparse.Namespace) -> int:
+    print(
+        {
+            'ok': True,
+            'cleared': clear_runner_stop_signal(),
+            'path': str(runner_stop_signal_path()),
+        }
+    )
+    return 0
 
 
 def run_reset_runner_fuse(args: argparse.Namespace) -> int:
@@ -486,8 +674,18 @@ def main() -> int:
         return run_auto_runner_once(args)
     if args.command == "auto-runner-loop":
         return run_auto_runner_loop(args)
+    if args.command == "runtime-start":
+        return run_runtime_start(args)
+    if args.command == "runtime-stop":
+        return run_runtime_stop(args)
+    if args.command in {"runtime-status", "runtime-observe"}:
+        return run_runtime_status(args)
     if args.command == "reset-runner-fuse":
         return run_reset_runner_fuse(args)
+    if args.command == "request-runner-stop":
+        return run_request_runner_stop(args)
+    if args.command == "clear-runner-stop":
+        return run_clear_runner_stop(args)
     if args.command == "live-execution-snapshot":
         return run_live_execution_snapshot(args)
     if args.command == "single-active-trade-state":

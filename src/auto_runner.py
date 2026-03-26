@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from .auto_entry_gate import evaluate_auto_entry
 from .auto_runner_execution_policy import build_execution_ready_decision
@@ -27,10 +28,10 @@ from .route_executor import execute_route_candidate
 from .runner_health import build_runner_health_summary
 from .runner_recovery import reset_runner_fuse
 from .runner_recovery_policy import build_recovery_policy
-from .runner_state import describe_runner_state_file, load_runner_state, mark_runner_cycle_started, save_runner_state
+from .runner_state import describe_runner_state_file, load_runner_state, load_runner_stop_signal, mark_runner_cycle_started, save_runner_state
 from .scan_flow import apply_ranked_candidate_handoff, build_auto_entry_config, scan_symbol_analysis
 from .universe import build_symbol_universe
-from .utils import utc_now_iso
+from .utils import parse_utc_iso, utc_now_iso
 
 
 @dataclass
@@ -49,6 +50,81 @@ class AutoRunnerLoopResult:
     loop_started_at: str
     loop_finished_at: str
     cycles: list[AutoRunnerCycleResult] = field(default_factory=list)
+    stop_requested: bool = False
+    stop_reason: str | None = None
+
+
+def _update_runner_loop_state(**updates) -> dict:
+    state = load_runner_state()
+    state.update(updates)
+    save_runner_state(state)
+    return state
+
+
+def _resolve_sleep_until_at(started_at: str, sleep_seconds: float) -> str | None:
+    started = parse_utc_iso(started_at)
+    if started is None:
+        return None
+    return (started + timedelta(seconds=max(float(sleep_seconds or 0.0), 0.0))).replace(microsecond=0).isoformat()
+
+
+def _sleep_with_heartbeat(total_sleep_seconds: float, heartbeat_interval_seconds: float = 5.0) -> dict | None:
+    remaining = max(float(total_sleep_seconds or 0.0), 0.0)
+    if remaining <= 0:
+        return None
+
+    heartbeat_interval = max(float(heartbeat_interval_seconds or 5.0), 0.25)
+    started_at = utc_now_iso()
+    _update_runner_loop_state(
+        last_loop_status='sleeping',
+        last_loop_sleep_started_at=started_at,
+        last_loop_sleep_until_at=_resolve_sleep_until_at(started_at, remaining),
+        last_loop_sleep_seconds=remaining,
+        last_loop_sleep_remaining_seconds=remaining,
+        last_heartbeat_at=started_at,
+        last_heartbeat_status='sleeping',
+    )
+
+    stop_signal = load_runner_stop_signal()
+    if stop_signal is not None:
+        detected_at = utc_now_iso()
+        _update_runner_loop_state(
+            last_loop_status='stop_requested',
+            last_loop_exit_reason='stop_requested',
+            last_stop_signal_at=stop_signal.get('requested_at') or detected_at,
+            last_stop_signal_reason=stop_signal.get('reason') or 'manual_stop',
+            last_loop_sleep_remaining_seconds=remaining,
+            last_heartbeat_at=detected_at,
+            last_heartbeat_status='stop_requested',
+        )
+        return stop_signal
+
+    while remaining > 0:
+        chunk = min(heartbeat_interval, remaining)
+        time.sleep(chunk)
+        remaining = max(remaining - chunk, 0.0)
+        heartbeat_at = utc_now_iso()
+        stop_signal = load_runner_stop_signal()
+        if stop_signal is not None:
+            _update_runner_loop_state(
+                last_loop_status='stop_requested',
+                last_loop_exit_reason='stop_requested',
+                last_stop_signal_at=stop_signal.get('requested_at') or heartbeat_at,
+                last_stop_signal_reason=stop_signal.get('reason') or 'manual_stop',
+                last_loop_sleep_remaining_seconds=remaining,
+                last_heartbeat_at=heartbeat_at,
+                last_heartbeat_status='stop_requested',
+            )
+            return stop_signal
+        if remaining > 0:
+            _update_runner_loop_state(
+                last_loop_status='sleeping',
+                last_loop_sleep_remaining_seconds=remaining,
+                last_heartbeat_at=heartbeat_at,
+                last_heartbeat_status='sleeping',
+            )
+
+    return None
 
 
 
@@ -554,21 +630,84 @@ def run_auto_cycle(config_path: str, env_file: str, action_mode: str = 'dry_run'
 
 
 
-def run_auto_loop(config_path: str, env_file: str, action_mode: str = 'dry_run', cycles: int = 1, sleep_seconds: float = 0.0) -> AutoRunnerLoopResult:
+def run_auto_loop(
+    config_path: str,
+    env_file: str,
+    action_mode: str = 'dry_run',
+    cycles: int = 1,
+    sleep_seconds: float = 0.0,
+    run_forever: bool = False,
+    sleep_heartbeat_seconds: float = 5.0,
+) -> AutoRunnerLoopResult:
     started_at = utc_now_iso()
     results: list[AutoRunnerCycleResult] = []
-    for index in range(max(cycles, 1)):
+    target_cycles = None if run_forever or cycles <= 0 else max(cycles, 1)
+    loop_mode = 'resident' if target_cycles is None else 'bounded'
+    stop_requested = False
+    stop_reason: str | None = None
+    exit_reason: str | None = None
+
+    _update_runner_loop_state(
+        last_loop_mode=loop_mode,
+        last_loop_status='running',
+        last_loop_action_mode=action_mode,
+        last_loop_started_at=started_at,
+        last_loop_finished_at=None,
+        last_loop_exit_reason=None,
+        last_loop_cycle_target=target_cycles,
+        last_loop_cycle_count=0,
+        last_loop_heartbeat_interval_seconds=max(float(sleep_heartbeat_seconds or 5.0), 0.25),
+        last_loop_sleep_started_at=None,
+        last_loop_sleep_until_at=None,
+        last_loop_sleep_seconds=0.0,
+        last_loop_sleep_remaining_seconds=0.0,
+    )
+
+    index = 0
+    while target_cycles is None or index < target_cycles:
+        stop_signal = load_runner_stop_signal()
+        if stop_signal is not None:
+            stop_requested = True
+            stop_reason = stop_signal.get('reason') or 'manual_stop'
+            exit_reason = 'stop_requested'
+            detected_at = utc_now_iso()
+            _update_runner_loop_state(
+                last_loop_status='stop_requested',
+                last_loop_exit_reason=exit_reason,
+                last_stop_signal_at=stop_signal.get('requested_at') or detected_at,
+                last_stop_signal_reason=stop_reason,
+                last_heartbeat_at=detected_at,
+                last_heartbeat_status='stop_requested',
+            )
+            break
+
         state = load_runner_state()
         if state.get('fuse_open') and not state.get('last_recovery_reason'):
+            exit_reason = 'fuse_open'
             break
 
         health_status = state.get('last_health_status')
         if health_status == 'fused' and not state.get('last_recovery_reason'):
+            exit_reason = 'fused_health'
             break
 
         result = run_auto_cycle(config_path=config_path, env_file=env_file, action_mode=action_mode)
         results.append(result)
-        if index < max(cycles, 1) - 1:
+        index += 1
+        _update_runner_loop_state(
+            last_loop_status='running',
+            last_loop_cycle_count=len(results),
+            last_loop_sleep_started_at=None,
+            last_loop_sleep_until_at=None,
+            last_loop_sleep_seconds=0.0,
+            last_loop_sleep_remaining_seconds=0.0,
+        )
+
+        if target_cycles is not None and index >= target_cycles:
+            exit_reason = 'cycle_limit_reached'
+            break
+
+        if target_cycles is None or index < target_cycles:
             state = load_runner_state()
             adaptive_sleep = float(state.get('next_sleep_seconds', sleep_seconds) or sleep_seconds)
             health_status = state.get('last_health_status')
@@ -577,14 +716,44 @@ def run_auto_loop(config_path: str, env_file: str, action_mode: str = 'dry_run',
             elif health_status == 'degraded':
                 adaptive_sleep = max(adaptive_sleep, 60.0)
             elif health_status == 'fused':
+                exit_reason = 'fused_health'
                 break
             actual_sleep = adaptive_sleep if adaptive_sleep > 0 else sleep_seconds
             if actual_sleep > 0:
-                time.sleep(actual_sleep)
+                stop_signal = _sleep_with_heartbeat(actual_sleep, sleep_heartbeat_seconds)
+                if stop_signal is not None:
+                    stop_requested = True
+                    stop_reason = stop_signal.get('reason') or 'manual_stop'
+                    exit_reason = 'stop_requested'
+                    break
     finished_at = utc_now_iso()
+
+    final_state = load_runner_state()
+    final_state.update(
+        {
+            'last_loop_mode': loop_mode,
+            'last_loop_status': ('stopped' if stop_requested else 'idle'),
+            'last_loop_action_mode': action_mode,
+            'last_loop_started_at': started_at,
+            'last_loop_finished_at': finished_at,
+            'last_loop_exit_reason': exit_reason or ('stop_requested' if stop_requested else 'completed'),
+            'last_loop_cycle_target': target_cycles,
+            'last_loop_cycle_count': len(results),
+            'last_loop_heartbeat_interval_seconds': max(float(sleep_heartbeat_seconds or 5.0), 0.25),
+            'last_loop_sleep_remaining_seconds': 0.0,
+            'last_stop_signal_reason': stop_reason or final_state.get('last_stop_signal_reason'),
+        }
+    )
+    if stop_requested:
+        final_state['last_heartbeat_at'] = finished_at
+        final_state['last_heartbeat_status'] = 'stopped'
+    save_runner_state(final_state)
+
     return AutoRunnerLoopResult(
         ok=all(item.ok for item in results),
         loop_started_at=started_at,
         loop_finished_at=finished_at,
         cycles=results,
+        stop_requested=stop_requested,
+        stop_reason=stop_reason,
     )

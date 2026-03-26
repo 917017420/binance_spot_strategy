@@ -15,7 +15,7 @@ from .live_inflight_state import (
     summarize_live_order_residue,
 )
 from .live_submit_state import load_live_submit_state, summarize_live_submit_state
-from .runner_state import load_runner_state
+from .runner_state import derive_runner_runtime_status, load_runner_state, load_runner_stop_signal
 from .single_active_trade_state import build_single_active_trade_state
 from .active_trade_release_log import _active_trade_release_log_path
 from .order_lifecycle_log import _order_lifecycle_log_path, tail_order_lifecycle_events
@@ -127,8 +127,29 @@ def _tail_active_trade_releases(base_dir: str | Path | None = None, limit: int =
 
 
 
-def _derive_next_action_plan(*, control, active_trade_state, inflight_residue_summary: dict, order_refresh: dict, submit_state_summary: dict) -> dict:
+def _derive_next_action_plan(*, control, runtime: dict, active_trade_state, inflight_residue_summary: dict, order_refresh: dict, submit_state_summary: dict) -> dict:
     active_symbol = active_trade_state.lock.active_symbol
+    if runtime.get('start_blocked_by_stop_signal'):
+        return {
+            'level': 'runtime_blocked',
+            'code': 'clear_stop_signal_before_restart',
+            'summary': 'Resident runtime start is blocked by a pending stop signal; clear it before the next supervised launch.',
+            'recommended_command': runtime.get('commands', {}).get('clear_stop') or 'python3 -m src.main clear-runner-stop',
+        }
+    if runtime.get('heartbeat_stale'):
+        return {
+            'level': 'runtime_attention',
+            'code': 'inspect_stale_runtime',
+            'summary': 'Resident runtime heartbeat is stale; inspect runtime and control-plane state before restarting.',
+            'recommended_command': runtime.get('commands', {}).get('control_plane') or 'python3 -m src.main control-plane-brief',
+        }
+    if runtime.get('loop_active'):
+        return {
+            'level': 'observe_runtime',
+            'code': 'resident_runtime_already_active',
+            'summary': 'Resident runtime is already active; observe its heartbeat and control-plane ownership instead of launching a parallel cycle.',
+            'recommended_command': runtime.get('commands', {}).get('observe') or 'python3 -m src.main runtime-status',
+        }
     if inflight_residue_summary.get('needs_manual_attention'):
         orphan_symbols = inflight_residue_summary.get('orphan_symbols') or []
         return {
@@ -194,6 +215,8 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
     stale_inflight = detect_stale_live_inflight(live_inflight_state, stale_after_seconds=stale_after_seconds)
     live_release_cooldown = detect_live_release_cooldown(live_inflight_state, cooldown_seconds=cooldown_seconds)
     runner_state = load_runner_state(base_dir=base_dir)
+    runner_stop_signal = load_runner_stop_signal(base_dir=base_dir)
+    runtime = derive_runner_runtime_status(runner_state, stop_signal=runner_stop_signal)
     active_trade_state = build_single_active_trade_state(base_dir=base_dir)
 
     queue_log_path = _execution_queue_log_path(base_dir=base_dir)
@@ -326,6 +349,7 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
 
     next_action_plan = _derive_next_action_plan(
         control=control,
+        runtime=runtime,
         active_trade_state=active_trade_state,
         inflight_residue_summary=inflight_residue_summary,
         order_refresh={
@@ -391,6 +415,22 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
             'health_status': control.status,
             'fuse_open': runner_state.get('fuse_open'),
             'next_sleep_seconds': runner_state.get('next_sleep_seconds'),
+            'runtime': runtime,
+            'last_loop_mode': runner_state.get('last_loop_mode'),
+            'last_loop_status': runner_state.get('last_loop_status'),
+            'last_loop_action_mode': runner_state.get('last_loop_action_mode'),
+            'last_loop_started_at': runner_state.get('last_loop_started_at'),
+            'last_loop_finished_at': runner_state.get('last_loop_finished_at'),
+            'last_loop_exit_reason': runner_state.get('last_loop_exit_reason'),
+            'last_loop_cycle_target': runner_state.get('last_loop_cycle_target'),
+            'last_loop_cycle_count': runner_state.get('last_loop_cycle_count', 0),
+            'last_loop_heartbeat_interval_seconds': runner_state.get('last_loop_heartbeat_interval_seconds', 5.0),
+            'last_loop_sleep_started_at': runner_state.get('last_loop_sleep_started_at'),
+            'last_loop_sleep_until_at': runner_state.get('last_loop_sleep_until_at'),
+            'last_loop_sleep_seconds': runner_state.get('last_loop_sleep_seconds', 0.0),
+            'last_loop_sleep_remaining_seconds': runner_state.get('last_loop_sleep_remaining_seconds', 0.0),
+            'last_stop_signal_at': runner_state.get('last_stop_signal_at'),
+            'last_stop_signal_reason': runner_state.get('last_stop_signal_reason'),
             'last_cycle_stage': runner_state.get('last_cycle_stage'),
             'last_cycle_started_at': runner_state.get('last_cycle_started_at'),
             'last_cycle_finished_at': runner_state.get('last_cycle_finished_at'),
@@ -418,6 +458,22 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
                 'cooldown_count': cooldown_count,
                 'can_push_live_now': control.can_push_live_now,
                 'needs_manual_intervention': control.needs_manual_intervention,
+                'runtime': runtime,
+                'last_loop_mode': runner_state.get('last_loop_mode'),
+                'last_loop_status': runner_state.get('last_loop_status'),
+                'last_loop_action_mode': runner_state.get('last_loop_action_mode'),
+                'last_loop_started_at': runner_state.get('last_loop_started_at'),
+                'last_loop_finished_at': runner_state.get('last_loop_finished_at'),
+                'last_loop_exit_reason': runner_state.get('last_loop_exit_reason'),
+                'last_loop_cycle_target': runner_state.get('last_loop_cycle_target'),
+                'last_loop_cycle_count': runner_state.get('last_loop_cycle_count', 0),
+                'last_loop_heartbeat_interval_seconds': runner_state.get('last_loop_heartbeat_interval_seconds', 5.0),
+                'last_loop_sleep_started_at': runner_state.get('last_loop_sleep_started_at'),
+                'last_loop_sleep_until_at': runner_state.get('last_loop_sleep_until_at'),
+                'last_loop_sleep_seconds': runner_state.get('last_loop_sleep_seconds', 0.0),
+                'last_loop_sleep_remaining_seconds': runner_state.get('last_loop_sleep_remaining_seconds', 0.0),
+                'last_stop_signal_at': runner_state.get('last_stop_signal_at'),
+                'last_stop_signal_reason': runner_state.get('last_stop_signal_reason'),
                 'last_heartbeat_at': runner_state.get('last_heartbeat_at'),
                 'last_heartbeat_status': runner_state.get('last_heartbeat_status'),
                 'last_cycle_started_at': runner_state.get('last_cycle_started_at'),
@@ -451,6 +507,7 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
             'summary': submit_state_summary,
             'archived_last_submit': live_submit_state.get('archived_last_submit'),
         },
+        'runtime': runtime,
         'live_inflight': {
             'count': len(inflight_orders),
             'pending_count': len(inflight_pending),

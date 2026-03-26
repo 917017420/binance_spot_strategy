@@ -20,6 +20,7 @@ def format_control_plane_brief(base_dir: str | Path | None = None) -> str:
     order_lifecycle = recent_history.get('order_lifecycle') or {}
     lifecycle_events = order_lifecycle.get('events') or []
     runner_summary = ((summary.get('runner') or {}).get('summary')) or {}
+    runtime = summary.get('runtime') or runner_summary.get('runtime') or {}
     order_refresh = summary.get('order_refresh') or {}
     next_action_plan = summary.get('next_action_plan') or {}
 
@@ -35,7 +36,45 @@ def format_control_plane_brief(base_dir: str | Path | None = None) -> str:
     if not blocker_lines:
         blocker_lines = ['none']
 
+    runtime_lines = [
+        f"status={runtime.get('status')}",
+        f"mode={runtime.get('mode')}",
+        f"action_mode={runtime.get('last_loop_action_mode')}",
+        f"loop_active={runtime.get('loop_active')}",
+        f"last_loop_started_at={runtime.get('last_loop_started_at')}",
+        f"last_loop_finished_at={runtime.get('last_loop_finished_at')}",
+        f"last_loop_cycle_count={runtime.get('last_loop_cycle_count')}",
+        f"heartbeat_stale={runtime.get('heartbeat_stale')}",
+        f"last_heartbeat_at={runtime.get('last_heartbeat_at')}",
+        f"last_heartbeat_status={runtime.get('last_heartbeat_status')}",
+        f"heartbeat_age_seconds={runtime.get('heartbeat_age_seconds')}",
+        f"heartbeat_timeout_seconds={runtime.get('heartbeat_timeout_seconds')}",
+        f"last_successful_cycle_at={runtime.get('last_successful_cycle_at')}",
+        f"sleep_until_at={runtime.get('last_loop_sleep_until_at')}",
+        f"sleep_remaining_seconds={runtime.get('last_loop_sleep_remaining_seconds')}",
+        f"stop_signal_present={runtime.get('stop_signal_present')}",
+        f"stop_signal_reason={runtime.get('stop_signal_reason')}",
+        f"stop_signal_requested_at={runtime.get('stop_signal_requested_at')}",
+        f"stop_signal_age_seconds={runtime.get('stop_signal_age_seconds')}",
+        f"start_blocked_by_stop_signal={runtime.get('start_blocked_by_stop_signal')}",
+        f"summary={runtime.get('summary')}",
+        f"operator_hint={runtime.get('operator_hint')}",
+        f"recommended_command={runtime.get('recommended_command')}",
+    ]
+
     history_lines = [
+        f"last_loop_mode={runner_summary.get('last_loop_mode')}",
+        f"last_loop_status={runner_summary.get('last_loop_status')}",
+        f"last_loop_action_mode={runner_summary.get('last_loop_action_mode')}",
+        f"last_loop_started_at={runner_summary.get('last_loop_started_at')}",
+        f"last_loop_finished_at={runner_summary.get('last_loop_finished_at')}",
+        f"last_loop_exit_reason={runner_summary.get('last_loop_exit_reason')}",
+        f"last_loop_cycle_target={runner_summary.get('last_loop_cycle_target')}",
+        f"last_loop_cycle_count={runner_summary.get('last_loop_cycle_count', 0)}",
+        f"last_loop_heartbeat_interval_seconds={runner_summary.get('last_loop_heartbeat_interval_seconds')}",
+        f"last_loop_sleep_until_at={runner_summary.get('last_loop_sleep_until_at')}",
+        f"last_loop_sleep_remaining_seconds={runner_summary.get('last_loop_sleep_remaining_seconds', 0.0)}",
+        f"last_stop_signal_reason={runner_summary.get('last_stop_signal_reason')}",
         f"last_heartbeat_at={runner_summary.get('last_heartbeat_at')}",
         f"last_heartbeat_status={runner_summary.get('last_heartbeat_status')}",
         f"last_cycle_started_at={runner_summary.get('last_cycle_started_at')}",
@@ -75,6 +114,9 @@ def format_control_plane_brief(base_dir: str | Path | None = None) -> str:
     next_action = next_action_plan.get('summary') or 'Observe current control-plane state and continue monitor/runner cycles.'
 
     sections = [
+        'RUNTIME',
+        *[f"- {item}" for item in runtime_lines],
+        '',
         'CURRENT',
         f"- status: {status}",
         f"- active_symbol: {active_symbol}",
@@ -116,5 +158,6 @@ def format_control_plane_brief(base_dir: str | Path | None = None) -> str:
         f"- action_level: {next_action_plan.get('level')}",
         f"- action_code: {next_action_plan.get('code')}",
         f"- recommended_command: {next_action_plan.get('recommended_command')}",
+        f"- runtime_stop_and_wait: {runtime.get('commands', {}).get('stop_and_wait')}",
     ]
     return '\n'.join(sections)

@@ -87,6 +87,12 @@ From `tools/binance_spot_strategy`:
 python3 -m src.main scan --top 5
 python3 -m src.main --log-level INFO scan --top 5 --max-symbols 40
 python3 -m src.main scan --symbol BTC/USDT
+python3 -m src.main runtime-start --action-mode live --sleep-seconds 60
+python3 -m src.main runtime-status
+python3 -m src.main runtime-stop --reason operator_stop --wait
+python3 -m src.main auto-runner-loop --action-mode live --forever
+python3 -m src.main request-runner-stop --reason operator_stop
+python3 -m src.main clear-runner-stop
 python3 -m src.main submit-preflight --symbol BTC/USDT --quote-amount 25 --reference-price 60000
 python3 -m src.main exchange-state-reconcile
 python3 -m src.main order-refresh-reconcile --symbol BTC/USDT --client-order-id my-client-id
@@ -102,12 +108,48 @@ Note: `--log-level`, `--config`, and `--env-file` are global options, so place t
 - `scan` — generate shortlist reports from public market data
 - `confirm-dry-run` — parse a confirmation-style command into a dry-run execution
 - `monitor-positions` — evaluate persisted positions and suggested actions
-- `auto-runner-once` / `auto-runner-loop` — run scanner and monitor workflows on a cycle
+- `runtime-start` / `runtime-stop` / `runtime-status` — preferred resident-runtime operator commands
+- `auto-runner-once` / `auto-runner-loop` — lower-level cycle and loop commands kept for compatibility
+- `request-runner-stop` / `clear-runner-stop` — lower-level stop-signal controls used by the resident runtime
 - `submit-preflight` — validate a potential live order without sending it
 - `exchange-state-reconcile` — compare local execution state to remote open orders/balances
 - `order-refresh-reconcile` — refresh a specific order fact and re-apply local reconciliation
 - `repair-single-active-trade` — repair conflicting single-active-trade lock state
 - `reconcile-control-plane` — clean up state after exits, repairs, or unlocks
+
+## Background loop ergonomics
+
+Preferred resident operation now uses the `runtime-*` commands:
+
+- `runtime-start` runs the loop in resident mode with a clearer service-style story
+- `runtime-stop` requests graceful loop shutdown through the stop-signal file
+- `runtime-stop --wait` blocks until the loop becomes inactive or the wait times out, which is safer for supervised restarts
+- `runtime-status` gives a concise operator view of runtime heartbeat, sleep window, stop age, and control-plane ownership
+- if a stop signal is still present, `runtime-start` refuses to launch until you clear it or pass `--clear-stop-signal`
+
+The older `auto-runner-loop` path still works and remains the compatibility layer underneath.
+
+`auto-runner-loop` can still be used directly like a resident service loop:
+
+- `--forever` keeps cycling until fuse health blocks the runner or a stop signal is requested
+- `request-runner-stop` writes a graceful stop signal under `data/execution/runner_stop.json`
+- `clear-runner-stop` clears that signal before the next resident start
+- while sleeping between cycles, the runner updates heartbeat and loop-sleep fields in `runner_state.json`
+
+Example:
+
+```bash
+python3 -m src.main runtime-start --action-mode live --sleep-seconds 60
+python3 -m src.main runtime-status
+python3 -m src.main runtime-stop --reason nightly_maintenance --wait
+
+# Compatible lower-level commands remain available:
+python3 -m src.main auto-runner-loop --action-mode live --forever
+python3 -m src.main request-runner-stop --reason nightly_maintenance
+python3 -m src.main control-plane-brief
+```
+
+`runtime-start` is intentionally foreground and is meant to be supervised by `tmux`, `systemd`, `nohup`, or a similar process supervisor.
 
 ## Output and local state
 
@@ -138,6 +180,7 @@ These files are part of the operating model, not just debug artifacts.
 - Exchange-state reconciliation currently focuses on open-order alignment and basic balance visibility; it is not a full account inventory audit.
 - Order refresh depends on symbols and client order ids that were previously recorded locally.
 - Documentation and commands are evolving with the hardening work; expect more guardrails before trusting unattended live use.
+- Resident mode is still a supervised foreground process, not a self-daemonizing service with restart orchestration.
 
 ## Testing
 

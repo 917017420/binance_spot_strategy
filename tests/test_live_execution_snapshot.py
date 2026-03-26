@@ -7,6 +7,7 @@ from src.live_execution_snapshot import build_live_execution_snapshot
 from src.live_fill_reconcile import apply_live_order_fact
 from src.models import Position
 from src.positions_store import save_positions
+from src.runner_state import save_runner_state, save_runner_stop_signal
 from src.utils import utc_now_iso
 
 
@@ -117,3 +118,62 @@ def test_live_execution_snapshot_excludes_simulated_positions_from_operational_v
     assert single_active_trade['active_symbol'] == 'ADA/USDT'
     assert [item['symbol'] for item in single_active_trade['observed_positions']] == ['ADA/USDT']
     assert single_active_trade['excluded_simulation_positions_count'] == 1
+
+
+def test_live_execution_snapshot_includes_resident_runtime_summary(tmp_path):
+    save_runner_state(
+        {
+            'last_loop_mode': 'resident',
+            'last_loop_status': 'sleeping',
+            'last_loop_action_mode': 'live',
+            'last_loop_started_at': '2026-03-26T00:00:00+00:00',
+            'last_successful_cycle_at': '2026-03-26T00:00:05+00:00',
+            'last_loop_cycle_count': 7,
+            'last_loop_sleep_until_at': '2026-03-26T00:10:00+00:00',
+            'last_loop_sleep_remaining_seconds': 25.0,
+            'last_loop_heartbeat_interval_seconds': 5.0,
+            'last_heartbeat_at': utc_now_iso(),
+            'last_heartbeat_status': 'sleeping',
+        },
+        base_dir=tmp_path,
+    )
+    save_runner_stop_signal('nightly_maintenance', base_dir=tmp_path)
+
+    snapshot = build_live_execution_snapshot(base_dir=tmp_path)
+    runtime = snapshot.summary['runtime']
+
+    assert runtime['mode'] == 'resident'
+    assert runtime['status'] == 'sleeping'
+    assert runtime['last_loop_action_mode'] == 'live'
+    assert runtime['stop_signal_present'] is True
+    assert runtime['commands']['start'] == 'python3 -m src.main runtime-start --action-mode dry_run'
+    assert runtime['commands']['stop_and_wait'] == 'python3 -m src.main runtime-stop --reason operator_stop --wait'
+    assert snapshot.summary['next_action_plan']['code'] == 'resident_runtime_already_active'
+    assert snapshot.summary['next_action_plan']['recommended_command'] == 'python3 -m src.main runtime-status'
+
+    brief = format_control_plane_brief(base_dir=tmp_path)
+    assert 'RUNTIME' in brief
+    assert '- status=sleeping' in brief
+    assert '- action_mode=live' in brief
+    assert '- stop_signal_present=True' in brief
+    assert '- runtime_stop_and_wait: python3 -m src.main runtime-stop --reason operator_stop --wait' in brief
+
+
+def test_live_execution_snapshot_prefers_clearing_stop_signal_when_runtime_is_blocked(tmp_path):
+    save_runner_state(
+        {
+            'last_loop_mode': 'resident',
+            'last_loop_status': 'stopped',
+            'last_loop_started_at': '2026-03-26T00:00:00+00:00',
+            'last_loop_finished_at': '2026-03-26T00:00:10+00:00',
+            'last_heartbeat_at': '2026-03-26T00:00:10+00:00',
+        },
+        base_dir=tmp_path,
+    )
+    save_runner_stop_signal('nightly_maintenance', base_dir=tmp_path)
+
+    snapshot = build_live_execution_snapshot(base_dir=tmp_path)
+
+    assert snapshot.summary['runtime']['start_blocked_by_stop_signal'] is True
+    assert snapshot.summary['next_action_plan']['code'] == 'clear_stop_signal_before_restart'
+    assert snapshot.summary['next_action_plan']['recommended_command'] == 'python3 -m src.main clear-runner-stop'
