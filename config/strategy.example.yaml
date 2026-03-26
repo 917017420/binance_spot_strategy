@@ -1,0 +1,69 @@
+exchange:
+  name: binance
+  timeout_ms: 15000
+
+universe:
+  quote_asset: USDT
+  min_quote_volume: 10000000
+  max_symbols: 50
+  excluded_bases:
+    - USDC
+    - FDUSD
+    - BUSD
+    - TUSD
+    - USDP
+    - DAI
+    - PAX
+    - USD1
+    - USDS
+    - USDT
+    - EUR
+    - EURS
+    - AEUR
+  excluded_symbol_patterns:
+    - UP
+    - DOWN
+    - BULL
+    - BEAR
+
+data:
+  primary_timeframe: 1h
+  context_timeframe: 4h
+  ohlcv_limit: 260
+
+strategy:
+  candidate_min_total_score: 60
+  candidate_min_trend_score: 15
+  candidate_min_liquidity_score: 10
+  volume_strong_multiple: 3.0
+  volume_healthy_multiple: 2.0
+  strong_total_score: 75
+  breakout_max_ema20_distance_pct: 6.0
+  pullback_reclaim_lookback: 5
+
+day_context:
+  trending_bonus: 8
+  overheated_penalty: 20
+  weak_rebound_penalty: 15
+
+auto_entry:
+  live_min_score: 85
+  paper_min_score: 65
+  shadow_min_score: 40
+  shadow_soft_risk_points: 2
+  max_open_positions: 3
+  max_single_position_pct: 10.0
+  max_total_exposure_pct: 30.0
+  allow_watchlist_alert_to_paper: true
+  allow_manual_confirmation_to_paper: true
+  deny_when_market_risk_off: true
+  bucket_weight_overrides:
+    strict: 2
+    normal: 1
+    lenient: 0
+  scan_reference_equity_quote: 1000.0
+  scan_tiny_live_notional_quote: 6.0
+  live_order_quote_amount: 6.0
+
+output:
+  directory: data/output

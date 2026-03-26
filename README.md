@@ -1,0 +1,149 @@
+# Binance Spot Strategy
+
+Lightweight Python tooling for two related jobs:
+
+- a public-data Binance Spot scanner for `USDT` pairs
+- a cautious live-control-plane layer for preflight, reconcile, and local state repair
+
+This package is still intentionally conservative. It is not a fully automated trading system.
+
+## What is here today
+
+### Scanner
+
+- Runs with public Binance market data
+- Scans Binance Spot `USDT` pairs
+- Filters out stablecoin-like pairs, leveraged tokens, and low-liquidity symbols
+- Fetches `1h` and `4h` OHLCV candles
+- Computes `EMA20`, `EMA50`, `EMA200`, `ATR(14)`, `20-bar high/low`, and `20-bar average volume`
+- Classifies BTC regime as `risk_on`, `neutral`, or `risk_off`
+- Scores symbols and emits shortlist-style actions such as:
+  - `BUY_READY_BREAKOUT`
+  - `BUY_READY_PULLBACK`
+  - `WATCH_ONLY`
+- Writes `data/output/latest_scan.json` and `data/output/latest_scan.txt`
+
+### Live control-plane helpers
+
+- `submit-preflight` checks credentials, private-mode flags, single-active-trade lock state, and market minimums before a real submit path is allowed
+- `exchange-state-reconcile` compares local inflight order tracking with remote Binance open orders before live submit
+- `order-refresh-reconcile` re-fetches a Binance order by client order id and re-applies local fill reconciliation
+- `live-execution-snapshot`, `control-plane-brief`, and single-active-trade commands summarize safety state kept in `data/execution/`
+- Live submit remains disabled unless both `BINANCE_ENABLE_PRIVATE` and `BINANCE_ENABLE_ORDER_SUBMIT` are enabled
+
+## Safety model
+
+Default behavior is safe-by-default:
+
+- scanner mode never places live orders
+- adapter preview mode records intent but does not call real submit APIs
+- real submit requires API key, API secret, private mode, and explicit order-submit enablement
+- local state is reconciled through JSON/JSONL files under `data/execution/`
+- control-plane commands are meant to block or surface mismatches, not silently heal everything
+
+## Important disclaimer
+
+Use at your own risk. Nothing here is financial advice.
+
+Even with the control-plane checks, this project is still a lightweight local toolset. It does not provide exchange-grade guarantees, failover, or custody protections.
+
+## Requirements
+
+- Python `3.11+`
+- internet access for Binance market data
+
+Install dependencies:
+
+```bash
+cd tools/binance_spot_strategy
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Configuration
+
+Optional environment file:
+
+```bash
+cp .env.example .env
+```
+
+Sample strategy config:
+
+```bash
+config/strategy.example.yaml
+```
+
+The scanner works without credentials.
+
+Live/private commands require valid Binance credentials plus explicit enable flags.
+
+## Common commands
+
+From `tools/binance_spot_strategy`:
+
+```bash
+python3 -m src.main scan --top 5
+python3 -m src.main --log-level INFO scan --top 5 --max-symbols 40
+python3 -m src.main scan --symbol BTC/USDT
+python3 -m src.main submit-preflight --symbol BTC/USDT --quote-amount 25 --reference-price 60000
+python3 -m src.main exchange-state-reconcile
+python3 -m src.main order-refresh-reconcile --symbol BTC/USDT --client-order-id my-client-id
+python3 -m src.main live-execution-snapshot
+python3 -m src.main control-plane-brief
+python3 -m src.main --help
+```
+
+Note: `--log-level`, `--config`, and `--env-file` are global options, so place them before the subcommand.
+
+## Key subcommands
+
+- `scan` — generate shortlist reports from public market data
+- `confirm-dry-run` — parse a confirmation-style command into a dry-run execution
+- `monitor-positions` — evaluate persisted positions and suggested actions
+- `auto-runner-once` / `auto-runner-loop` — run scanner and monitor workflows on a cycle
+- `submit-preflight` — validate a potential live order without sending it
+- `exchange-state-reconcile` — compare local execution state to remote open orders/balances
+- `order-refresh-reconcile` — refresh a specific order fact and re-apply local reconciliation
+- `repair-single-active-trade` — repair conflicting single-active-trade lock state
+- `reconcile-control-plane` — clean up state after exits, repairs, or unlocks
+
+## Output and local state
+
+### Reports
+
+- `data/output/latest_scan.json`
+- `data/output/latest_scan.txt`
+
+### Execution state
+
+The control plane stores local state in `data/execution/`, including files such as:
+
+- `live_submit_state.json`
+- `live_inflight_state.json`
+- `positions.json`
+- `executed_orders.jsonl`
+- `position_events.jsonl`
+- `active_trade_releases.jsonl`
+
+These files are part of the operating model, not just debug artifacts.
+
+## Current limitations
+
+- The scanner is heuristic shortlist generation, not a validated strategy.
+- The control plane is file-based and intended for a single local operator/process; it is not multi-process safe.
+- Reconciliation is polling-based, not websocket-driven, so fills and remote state can be observed late.
+- Preflight checks market minimums, but it does not fully model every Binance rule or precision edge case.
+- Exchange-state reconciliation currently focuses on open-order alignment and basic balance visibility; it is not a full account inventory audit.
+- Order refresh depends on symbols and client order ids that were previously recorded locally.
+- Documentation and commands are evolving with the hardening work; expect more guardrails before trusting unattended live use.
+
+## Testing
+
+From `tools/binance_spot_strategy`:
+
+```bash
+python3 -m compileall -q src tests
+pytest -q
+```

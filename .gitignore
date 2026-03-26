@@ -1,0 +1,9 @@
+.env
+.env.bak-live-test
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/output/latest_scan.json
+data/output/latest_scan.txt
+data/execution/
