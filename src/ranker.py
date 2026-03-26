@@ -19,6 +19,8 @@ def _sorted_candidates(candidates: list[PairAnalysis]) -> list[PairAnalysis]:
             item.decision_action == "BUY_APPROVED",
             item.decision_action == "WATCHLIST_ALERT",
             item.decision_priority,
+            item.reward_risk_ratio,
+            item.scores.runway_score,
             item.scores.mtf_alignment_score,
             item.scores.structure_quality_score,
             item.scores.execution_quality_score,
@@ -40,6 +42,7 @@ def split_priority_and_secondary(candidates: list[PairAnalysis], top_n: int) -> 
             c.decision_action == "WATCHLIST_ALERT"
             and c.decision_priority >= 120
             and c.scores.total_score >= 55
+            and c.runway_upside_pct >= 1.0
         )
     ]
 

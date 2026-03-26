@@ -60,6 +60,12 @@ class StrategySettings(BaseModel):
     pullback_reclaim_lookback: int = 5
     volume_strong_multiple: float = 3.0
     volume_healthy_multiple: float = 2.0
+    runway_lookback_bars: int = 96
+    runway_min_upside_pct: float = 2.5
+    runway_full_score_upside_pct: float = 8.0
+    runway_near_high_threshold_pct: float = 1.2
+    runway_insufficient_penalty: int = 8
+    buy_min_reward_risk_ratio: float = 1.6
 
 
 class DayContextSettings(BaseModel):
@@ -89,6 +95,12 @@ class ExitSettings(BaseModel):
     initial_stop_loss_pct: float = 4.0
     tp1_profit_pct: float = 6.0
     tp2_profit_pct: float = 10.0
+    initial_stop_atr_multiple: float = 1.25
+    stop_structure_buffer_atr: float = 0.3
+    tp1_atr_multiple: float = 1.5
+    tp2_atr_multiple: float = 2.8
+    tp1_runway_fraction: float = 0.5
+    resistance_buffer_pct: float = 0.25
     tp1_reduce_pct: float = 30.0
     tp2_reduce_pct: float = 30.0
     trailing_drawdown_pct: float = 4.0
@@ -203,6 +215,30 @@ def load_settings(config_path: str | None = None, env_path: str | None = None) -
     merged['exit']['tp2_profit_pct'] = _env_float(
         'POSITION_EXIT_TP2_PROFIT_PCT',
         merged['exit'].get('tp2_profit_pct', 10.0),
+    )
+    merged['exit']['initial_stop_atr_multiple'] = _env_float(
+        'POSITION_EXIT_INITIAL_STOP_ATR_MULTIPLE',
+        merged['exit'].get('initial_stop_atr_multiple', 1.25),
+    )
+    merged['exit']['stop_structure_buffer_atr'] = _env_float(
+        'POSITION_EXIT_STOP_STRUCTURE_BUFFER_ATR',
+        merged['exit'].get('stop_structure_buffer_atr', 0.3),
+    )
+    merged['exit']['tp1_atr_multiple'] = _env_float(
+        'POSITION_EXIT_TP1_ATR_MULTIPLE',
+        merged['exit'].get('tp1_atr_multiple', 1.5),
+    )
+    merged['exit']['tp2_atr_multiple'] = _env_float(
+        'POSITION_EXIT_TP2_ATR_MULTIPLE',
+        merged['exit'].get('tp2_atr_multiple', 2.8),
+    )
+    merged['exit']['tp1_runway_fraction'] = _env_float(
+        'POSITION_EXIT_TP1_RUNWAY_FRACTION',
+        merged['exit'].get('tp1_runway_fraction', 0.5),
+    )
+    merged['exit']['resistance_buffer_pct'] = _env_float(
+        'POSITION_EXIT_RESISTANCE_BUFFER_PCT',
+        merged['exit'].get('resistance_buffer_pct', 0.25),
     )
     merged['exit']['tp1_reduce_pct'] = _env_float(
         'POSITION_EXIT_TP1_REDUCE_PCT',

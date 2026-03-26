@@ -9,7 +9,7 @@ from .live_inflight_state import build_live_logical_key, load_live_inflight_stat
 from .live_position_residue import classify_live_position_residue
 from .live_submit_state import load_live_submit_state, save_live_submit_state
 from .models import Position
-from .position_exit_policy import build_initial_stop_price, build_take_profit_price
+from .position_exit_policy import plan_entry_exit_levels
 from .positions_store import classify_position_truth_domain, load_positions, save_positions
 from .utils import utc_now_iso
 
@@ -33,6 +33,12 @@ class LiveOrderFact:
     move_stop_to_breakeven_after_fill: bool = False
     enable_trailing_after_fill: bool = False
     requested_reduce_pct: float | None = None
+    atr14_at_signal: float | None = None
+    structure_support_price: float | None = None
+    runway_resistance_price: float | None = None
+    planned_initial_stop_price: float | None = None
+    planned_tp1_price: float | None = None
+    planned_tp2_price: float | None = None
     raw: dict = field(default_factory=dict)
 
 
@@ -148,6 +154,12 @@ def build_live_order_fact(response, request) -> LiveOrderFact:
         move_stop_to_breakeven_after_fill=_coerce_bool(request_metadata.get('move_stop_to_breakeven_after_fill')),
         enable_trailing_after_fill=_coerce_bool(request_metadata.get('enable_trailing_after_fill')),
         requested_reduce_pct=requested_reduce_pct,
+        atr14_at_signal=_coerce_float(request_metadata.get('atr14_at_signal')),
+        structure_support_price=_coerce_float(request_metadata.get('structure_support_price')),
+        runway_resistance_price=_coerce_float(request_metadata.get('runway_resistance_price')),
+        planned_initial_stop_price=_coerce_float(request_metadata.get('planned_initial_stop_price')),
+        planned_tp1_price=_coerce_float(request_metadata.get('planned_tp1_price')),
+        planned_tp2_price=_coerce_float(request_metadata.get('planned_tp2_price')),
         raw=raw,
     )
 
@@ -164,6 +176,17 @@ def _find_or_create_position(positions: list[Position], fact: LiveOrderFact) -> 
     exit_settings = load_settings().exit
     entry_price = fact.average_price or (fact.filled_quote_amount / fact.filled_base_amount if fact.filled_base_amount > 0 else 0.0)
     base_size_pct = fact.requested_position_size_pct if fact.requested_position_size_pct and fact.requested_position_size_pct > 0 else 100.0
+    exit_plan = plan_entry_exit_levels(
+        entry_price,
+        exit_settings=exit_settings,
+        suggested_stop_price=fact.structure_support_price,
+        atr14=fact.atr14_at_signal,
+        structure_support_price=fact.structure_support_price,
+        local_resistance_price=fact.runway_resistance_price,
+    )
+    initial_stop_price = fact.planned_initial_stop_price if fact.planned_initial_stop_price and fact.planned_initial_stop_price > 0 else exit_plan.initial_stop_price
+    tp1_price = fact.planned_tp1_price if fact.planned_tp1_price and fact.planned_tp1_price > 0 else exit_plan.tp1_price
+    tp2_price = fact.planned_tp2_price if fact.planned_tp2_price and fact.planned_tp2_price > 0 else exit_plan.tp2_price
     return Position(
         position_id=f"pos:live:{fact.client_order_id or utc_now_iso()}",
         symbol=fact.symbol,
@@ -179,13 +202,13 @@ def _find_or_create_position(positions: list[Position], fact: LiveOrderFact) -> 
         remaining_position_size_pct=base_size_pct,
         entry_quote_amount=fact.filled_quote_amount,
         entry_base_amount=fact.filled_base_amount,
-        initial_stop_price=build_initial_stop_price(entry_price, exit_settings.initial_stop_loss_pct),
-        active_stop_price=build_initial_stop_price(entry_price, exit_settings.initial_stop_loss_pct),
+        initial_stop_price=initial_stop_price,
+        active_stop_price=initial_stop_price,
         suggested_stop_price=None,
         risk_budget='normal',
         market_state_at_entry='LIVE_RECONCILED',
-        tp1_price=build_take_profit_price(entry_price, exit_settings.tp1_profit_pct),
-        tp2_price=build_take_profit_price(entry_price, exit_settings.tp2_profit_pct),
+        tp1_price=tp1_price,
+        tp2_price=tp2_price,
         tp1_reduce_pct=exit_settings.tp1_reduce_pct,
         tp2_reduce_pct=exit_settings.tp2_reduce_pct,
         move_stop_to_breakeven_on_tp1=exit_settings.move_stop_to_breakeven_on_tp1,
@@ -194,7 +217,7 @@ def _find_or_create_position(positions: list[Position], fact: LiveOrderFact) -> 
         trailing_drawdown_pct=exit_settings.trailing_drawdown_pct,
         highest_price_since_entry=entry_price,
         last_price=entry_price,
-        notes=['created by live_fill_reconcile'],
+        notes=['created by live_fill_reconcile', *[f"exit_plan: {note}" for note in exit_plan.notes[:2]]],
         tags=['live_fill_reconciled', 'truth_domain_live'],
     )
 

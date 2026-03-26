@@ -6,6 +6,22 @@ from .config import Settings
 from .models import IndicatorSnapshot, ScoreBreakdown
 
 
+def _runway_thresholds(settings: Settings) -> tuple[float, float]:
+    min_upside = max(float(settings.strategy.runway_min_upside_pct), 0.0)
+    preferred_upside = min_upside * 1.25 if min_upside > 0 else 0.0
+    return min_upside, preferred_upside
+
+
+def _runway_state(runway_upside_pct: float, settings: Settings) -> str:
+    runway = float(runway_upside_pct or 0.0)
+    min_upside, preferred_upside = _runway_thresholds(settings)
+    if runway < min_upside:
+        return "limited"
+    if runway < preferred_upside:
+        return "compressed"
+    return "healthy"
+
+
 def _has_pullback_reclaim(frame: pd.DataFrame, lookback: int) -> bool:
     recent = frame.tail(max(lookback + 2, 4)).copy()
     if len(recent) < 3:
@@ -29,16 +45,39 @@ def _has_weak_pullback_profile(indicators: IndicatorSnapshot) -> bool:
     return indicators.upper_wick_pct >= 30 and indicators.body_pct <= 20
 
 
+def _has_limited_runway_for_entry(runway_upside_pct: float, settings: Settings, scores: ScoreBreakdown) -> bool:
+    runway_state = _runway_state(runway_upside_pct, settings)
+    return runway_state == "limited" or (scores.runway_penalty < 0 and runway_state != "healthy")
+
+
+def _runway_watch_reason(runway_upside_pct: float, settings: Settings, runway_state: str) -> str:
+    if runway_state == "compressed":
+        _, preferred_upside = _runway_thresholds(settings)
+        return (
+            f"Upside runway ({float(runway_upside_pct or 0.0):.2f}%) is only marginally above "
+            f"the {float(settings.strategy.runway_min_upside_pct):.2f}% minimum; prefer at least {preferred_upside:.2f}%"
+        )
+    return (
+        f"Upside runway ({float(runway_upside_pct or 0.0):.2f}%) is below "
+        f"minimum {float(settings.strategy.runway_min_upside_pct):.2f}% for entry readiness"
+    )
+
+
 def determine_signal(
     enriched_1h: pd.DataFrame,
     indicators_1h: IndicatorSnapshot,
     scores: ScoreBreakdown,
     regime: str,
     settings: Settings,
+    runway_upside_pct: float,
+    near_local_high: bool,
 ) -> tuple[str, str | None, list[str]]:
     reasons: list[str] = []
+    runway_state = _runway_state(runway_upside_pct, settings)
+    runway_limited = _has_limited_runway_for_entry(runway_upside_pct, settings, scores)
+    runway_compressed = runway_state == "compressed"
 
-    breakout_ready = (
+    breakout_setup = (
         scores.passed_candidate_gate
         and indicators_1h.close > indicators_1h.high20
         and indicators_1h.volume > indicators_1h.avg_volume20
@@ -46,11 +85,21 @@ def determine_signal(
         and not _has_weak_breakout_profile(indicators_1h)
         and regime != "risk_off"
     )
+    breakout_ready = breakout_setup and not runway_limited and not runway_compressed
     if breakout_ready:
         reasons.append("Breakout above prior 20-bar high with confirming volume")
         return "BUY_READY_BREAKOUT", None, reasons
+    if breakout_setup and (runway_limited or runway_compressed):
+        if runway_compressed:
+            reasons.append("Breakout trigger exists but upside runway is still too compressed for favorable payoff")
+        else:
+            reasons.append("Breakout trigger exists but remaining upside runway is too limited")
+        reasons.append(_runway_watch_reason(runway_upside_pct, settings, runway_state))
+        if near_local_high:
+            reasons.append("Price is pressing into nearby local resistance")
+        return "WATCH_ONLY", None, reasons
 
-    pullback_ready = (
+    pullback_setup = (
         scores.passed_candidate_gate
         and indicators_1h.close > indicators_1h.ema50
         and indicators_1h.ema20 > indicators_1h.ema50
@@ -59,9 +108,19 @@ def determine_signal(
         and _has_pullback_reclaim(enriched_1h, settings.strategy.pullback_reclaim_lookback)
         and regime != "risk_off"
     )
+    pullback_ready = pullback_setup and not runway_limited and not runway_compressed
     if pullback_ready:
         reasons.append("Pullback and EMA20 reclaim remain structurally intact")
         return "BUY_READY_PULLBACK", None, reasons
+    if pullback_setup and (runway_limited or runway_compressed):
+        if runway_compressed:
+            reasons.append("Pullback structure is valid but upside runway remains too compressed for entry readiness")
+        else:
+            reasons.append("Pullback setup remains strong but upside runway is still limited")
+        reasons.append(_runway_watch_reason(runway_upside_pct, settings, runway_state))
+        if near_local_high:
+            reasons.append("Nearby resistance keeps reward potential compressed")
+        return "WATCH_ONLY", None, reasons
 
     near_breakout = (
         scores.total_score >= max(settings.strategy.candidate_min_total_score - 5, 50)
@@ -72,6 +131,9 @@ def determine_signal(
         reasons.append("Price is close to a breakout trigger but confirmation is incomplete")
         if indicators_1h.volume <= indicators_1h.avg_volume20:
             reasons.append("Volume confirmation is still missing")
+        if runway_limited or runway_compressed:
+            reasons.append(_runway_watch_reason(runway_upside_pct, settings, runway_state))
+            return "WATCH_ONLY", None, reasons
         return "WATCH_ONLY", "NEAR_BREAKOUT", reasons
 
     pullback_forming = (
@@ -82,12 +144,17 @@ def determine_signal(
     )
     if pullback_forming:
         reasons.append("Trend remains intact and a pullback setup may be forming")
+        if runway_limited or runway_compressed:
+            reasons.append(_runway_watch_reason(runway_upside_pct, settings, runway_state))
+            return "WATCH_ONLY", None, reasons
         return "WATCH_ONLY", "PULLBACK_FORMING", reasons
 
     relative_strength_watch = (
         scores.strength_score >= 12
         and scores.liquidity_score >= settings.strategy.candidate_min_liquidity_score
         and regime != "risk_off"
+        and not runway_limited
+        and not runway_compressed
     )
     if relative_strength_watch:
         reasons.append("Symbol shows relative strength but lacks a clean entry trigger")
@@ -101,6 +168,8 @@ def determine_signal(
         reasons.append("Pullback profile is weak / rejection-heavy")
     if not scores.passed_candidate_gate:
         reasons.append("Candidate gate not met")
+    if runway_limited or runway_compressed:
+        reasons.append(_runway_watch_reason(runway_upside_pct, settings, runway_state))
     if scores.trend_score < settings.strategy.candidate_min_trend_score:
         reasons.append("Trend structure score is below threshold")
     if scores.liquidity_score < settings.strategy.candidate_min_liquidity_score:

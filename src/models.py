@@ -40,6 +40,8 @@ class ScoreBreakdown(BaseModel):
     liquidity_score: int
     strength_score: int
     breakout_score: int
+    runway_score: int = 0
+    runway_penalty: int = 0
     mtf_alignment_score: int = 0
     structure_quality_score: int = 0
     execution_quality_score: int = 0
@@ -92,6 +94,18 @@ class PairAnalysis(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
     positive_reasons: list[str] = Field(default_factory=list)
     penalty_reasons: list[str] = Field(default_factory=list)
+    runway_upside_pct: float = 0.0
+    runway_resistance_price: float | None = None
+    local_high_reference_price: float | None = None
+    distance_to_local_high_pct: float = 0.0
+    near_local_high: bool = False
+    expected_upside_pct: float = 0.0
+    expected_downside_pct: float = 0.0
+    reward_risk_ratio: float = 0.0
+    planned_initial_stop_price: float | None = None
+    planned_tp1_price: float | None = None
+    planned_tp2_price: float | None = None
+    exit_plan_notes: list[str] = Field(default_factory=list)
     regime: RegimeType
     indicators_1h: IndicatorSnapshot
     indicators_4h: IndicatorSnapshot

@@ -40,6 +40,12 @@ strategy:
   strong_total_score: 75
   breakout_max_ema20_distance_pct: 6.0
   pullback_reclaim_lookback: 5
+  runway_lookback_bars: 96
+  runway_min_upside_pct: 2.5
+  runway_full_score_upside_pct: 8.0
+  runway_near_high_threshold_pct: 1.2
+  runway_insufficient_penalty: 8
+  buy_min_reward_risk_ratio: 1.6
 
 day_context:
   trending_bonus: 8
@@ -64,6 +70,23 @@ auto_entry:
   scan_reference_equity_quote: 1000.0
   scan_tiny_live_notional_quote: 6.0
   live_order_quote_amount: 6.0
+
+exit:
+  initial_stop_loss_pct: 4.0
+  tp1_profit_pct: 6.0
+  tp2_profit_pct: 10.0
+  initial_stop_atr_multiple: 1.25
+  stop_structure_buffer_atr: 0.3
+  tp1_atr_multiple: 1.5
+  tp2_atr_multiple: 2.8
+  tp1_runway_fraction: 0.5
+  resistance_buffer_pct: 0.25
+  tp1_reduce_pct: 30.0
+  tp2_reduce_pct: 30.0
+  trailing_drawdown_pct: 4.0
+  move_stop_to_breakeven_on_tp1: true
+  enable_trailing_on_tp2: true
+  risk_off_exit_enabled: true
 
 output:
   directory: data/output

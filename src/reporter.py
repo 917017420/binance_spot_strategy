@@ -35,7 +35,7 @@ def _format_candidate(candidate: PairAnalysis, report: ScanReport) -> str:
         f"  delta: score_delta={candidate.score_delta:+.1f} rank_delta={candidate.rank_delta:+d} prev_rank={candidate.previous_rank} prev_total={candidate.previous_total_score}",
         f"  execution_stage={candidate.execution_stage or 'NONE'} attention_level={candidate.attention_level or 'NONE'}",
         f"  route execution summary: route={decision.get('route', 'n/a')} status={route_exec.get('status', 'n/a')} mode={route_exec.get('mode', 'n/a')} message={route_exec.get('message', 'n/a')}",
-        f"  regime={candidate.regime} liquidity={candidate.scores.liquidity_score} trend={candidate.scores.trend_score} strength={candidate.scores.strength_score} breakout={candidate.scores.breakout_score} mtf={candidate.scores.mtf_alignment_score} structure={candidate.scores.structure_quality_score} exec={candidate.scores.execution_quality_score} overext={candidate.scores.overextension_penalty}",
+        f"  regime={candidate.regime} liquidity={candidate.scores.liquidity_score} trend={candidate.scores.trend_score} strength={candidate.scores.strength_score} breakout={candidate.scores.breakout_score} runway={candidate.scores.runway_score} runway_penalty={candidate.scores.runway_penalty} mtf={candidate.scores.mtf_alignment_score} structure={candidate.scores.structure_quality_score} exec={candidate.scores.execution_quality_score} overext={candidate.scores.overextension_penalty}",
         f"  close={one_h.close:.4f} ema20={one_h.ema20:.4f} ema50={one_h.ema50:.4f} ema200={one_h.ema200:.4f}",
         f"  high20={one_h.high20:.4f} low20={one_h.low20:.4f} atr%={one_h.atr14_pct:.2f} vol={one_h.volume:.2f} avg20={one_h.avg_volume20:.2f}",
         f"  change24h={one_h.change_24h_pct:.2f}% change7d={one_h.change_7d_pct:.2f}% upper_wick={one_h.upper_wick_pct:.1f}% body={one_h.body_pct:.1f}%",
@@ -50,6 +50,8 @@ def _format_candidate(candidate: PairAnalysis, report: ScanReport) -> str:
         f"  penalty reasons: {'; '.join(candidate.penalty_reasons[:3]) or 'none'}",
         f"  execution-fit: est_quote={candidate.execution_estimated_quote_amount:.2f} est_base={candidate.execution_estimated_base_amount:.6f} min_notional_ok={candidate.execution_min_notional_ok} min_amount_ok={candidate.execution_min_amount_ok} dust_risk={candidate.execution_dust_risk or 'none'} tiny_live_sensitivity={'elevated' if candidate.execution_dust_risk else 'normal'}",
         f"  tiny-live-fit: quote={candidate.execution_tiny_live_quote_amount:.2f} base={candidate.execution_tiny_live_base_amount:.6f} min_amount_ok={candidate.execution_tiny_live_min_amount_ok} market_min_amount={candidate.execution_market_min_amount:.6f} amount_step={candidate.execution_market_amount_step:.8f}",
+        f"  runway/risk: upside={candidate.runway_upside_pct:.2f}% near_high={candidate.near_local_high} distance_to_high={candidate.distance_to_local_high_pct:.2f}% rr={candidate.reward_risk_ratio:.2f} upside_plan={candidate.expected_upside_pct:.2f}% downside_plan={candidate.expected_downside_pct:.2f}%",
+        f"  exit plan: stop={(candidate.planned_initial_stop_price or 0.0):.4f} tp1={(candidate.planned_tp1_price or 0.0):.4f} tp2={(candidate.planned_tp2_price or 0.0):.4f}",
         f"  risk: invalidation={(candidate.risk.invalidation_level or 0.0):.4f} atr_buffer={(candidate.risk.atr_based_buffer or 0.0):.4f}",
         f"  risk notes: {'; '.join(candidate.risk.notes[:2]) or 'none'}",
     ]

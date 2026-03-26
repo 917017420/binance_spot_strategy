@@ -14,11 +14,17 @@ def score_candidate(
     btc_indicators_1h: IndicatorSnapshot,
     regime: str,
     settings: Settings,
+    *,
+    runway_upside_pct: float = 0.0,
+    distance_to_local_high_pct: float = 0.0,
+    near_local_high: bool = False,
 ) -> ScoreBreakdown:
     trend_score = 0
     liquidity_score = 0
     strength_score = 0
     breakout_score = 0
+    runway_score = 0
+    runway_penalty = 0
     mtf_alignment_score = 0
     structure_quality_score = 0
     execution_quality_score = 0
@@ -91,6 +97,29 @@ def score_candidate(
     if 1.0 <= indicators_1h.atr14_pct <= 8.0:
         breakout_score += 5
         reasons.append("ATR profile is tradable")
+
+    capped_runway = max(min(float(runway_upside_pct or 0.0), settings.strategy.runway_full_score_upside_pct), 0.0)
+    runway_score = int(round((capped_runway / max(settings.strategy.runway_full_score_upside_pct, 1e-9)) * 10))
+    if runway_score > 0:
+        reasons.append(f"Upside runway contributes {runway_score} score points ({runway_upside_pct:.2f}% estimated space)")
+    min_upside = max(float(settings.strategy.runway_min_upside_pct), 0.0)
+    preferred_upside = min_upside * 1.25 if min_upside > 0 else 0.0
+    severe_penalty = abs(int(settings.strategy.runway_insufficient_penalty))
+    compressed_penalty = max(severe_penalty // 2, 2)
+
+    if near_local_high and runway_upside_pct < min_upside:
+        runway_penalty = -abs(int(settings.strategy.runway_insufficient_penalty))
+        reasons.append("Price is too close to local highs with limited additional upside")
+    elif min_upside > 0 and runway_upside_pct < min_upside:
+        runway_penalty = -compressed_penalty
+        reasons.append("Upside runway is below the minimum even without a strict local-high squeeze")
+    elif preferred_upside > min_upside and runway_upside_pct < preferred_upside:
+        runway_penalty = -compressed_penalty
+        reasons.append("Upside runway is only marginally above the minimum; expected payoff is compressed")
+    elif runway_upside_pct >= min_upside:
+        reasons.append("Local structure still offers enough upside runway")
+    elif runway_upside_pct > 0:
+        reasons.append("Upside runway is limited; execution quality must be selective")
 
     if indicators_1h.upper_wick_pct <= 20 and indicators_1h.body_pct >= 45:
         structure_quality_score += 5
@@ -175,11 +204,13 @@ def score_candidate(
             + trend_score
             + strength_score
             + breakout_score
+            + runway_score
             + mtf_alignment_score
             + structure_quality_score
             + execution_quality_score
             + regime_score
             + day_context_bonus
+            + runway_penalty
             + overextension_penalty,
             100,
         ),
@@ -195,6 +226,8 @@ def score_candidate(
         liquidity_score=liquidity_score,
         strength_score=strength_score,
         breakout_score=breakout_score,
+        runway_score=runway_score,
+        runway_penalty=runway_penalty,
         mtf_alignment_score=mtf_alignment_score,
         structure_quality_score=structure_quality_score,
         execution_quality_score=execution_quality_score,

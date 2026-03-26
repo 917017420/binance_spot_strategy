@@ -76,6 +76,15 @@ def build_pending_confirmation(
         penalty_reasons=analysis.penalty_reasons,
         meta={
             "position_size_pct_from_analysis": analysis.position_size_pct,
+            "atr14_at_signal": analysis.indicators_1h.atr14,
+            "structure_support_price": analysis.risk.invalidation_level,
+            "runway_resistance_price": analysis.runway_resistance_price,
+            "runway_upside_pct": analysis.runway_upside_pct,
+            "reward_risk_ratio": analysis.reward_risk_ratio,
+            "planned_initial_stop_price": analysis.planned_initial_stop_price,
+            "planned_tp1_price": analysis.planned_tp1_price,
+            "planned_tp2_price": analysis.planned_tp2_price,
+            "exit_plan_notes": analysis.exit_plan_notes[:4],
         },
     )
 

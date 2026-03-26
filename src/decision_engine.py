@@ -73,6 +73,19 @@ def decide_action(analysis: PairAnalysis, settings: Settings) -> PairAnalysis:
     else:
         blocking_reasons.append("Total score is below minimum threshold")
 
+    if analysis.runway_upside_pct >= settings.strategy.runway_min_upside_pct:
+        positive_reasons.append("Upside runway passes the minimum execution threshold")
+    else:
+        blocking_reasons.append(
+            f"Upside runway ({analysis.runway_upside_pct:.2f}%) is below minimum {settings.strategy.runway_min_upside_pct:.2f}%"
+        )
+    if analysis.reward_risk_ratio >= settings.strategy.buy_min_reward_risk_ratio:
+        positive_reasons.append("Reward/risk profile passes the minimum execution threshold")
+    else:
+        blocking_reasons.append(
+            f"Reward/risk ratio ({analysis.reward_risk_ratio:.2f}) is below minimum {settings.strategy.buy_min_reward_risk_ratio:.2f}"
+        )
+
     if analysis.secondary_signal == "NEAR_BREAKOUT":
         positive_reasons.append("Price is close to a breakout trigger")
     if analysis.secondary_signal == "RELATIVE_STRENGTH_WATCH":
@@ -88,6 +101,9 @@ def decide_action(analysis: PairAnalysis, settings: Settings) -> PairAnalysis:
         positive_reasons.append('Multi-timeframe alignment is supportive')
     if analysis.scores.execution_quality_score < 0:
         penalty_reasons.append('Tiny-order execution quality is not ideal')
+    if analysis.near_local_high and analysis.runway_upside_pct < settings.strategy.runway_min_upside_pct:
+        penalty_reasons.append('Setup is near local highs but has limited additional upside')
+        analysis.decision_priority = max(analysis.decision_priority - settings.strategy.runway_insufficient_penalty, 0)
 
     if analysis.regime == "risk_off":
         blocking_reasons.append("Market regime is risk_off, so no new spot entries are allowed")
@@ -97,9 +113,9 @@ def decide_action(analysis: PairAnalysis, settings: Settings) -> PairAnalysis:
         analysis.attention_level = "LOW"
     elif analysis.signal in {"BUY_READY_BREAKOUT", "BUY_READY_PULLBACK"}:
         if blocking_reasons:
-            analysis.decision_action = IGNORE
-            analysis.execution_stage = "SETUP_BLOCKED"
-            analysis.attention_level = "LOW"
+            analysis.decision_action = WATCHLIST_ALERT
+            analysis.execution_stage = "MONITOR_ONLY"
+            analysis.attention_level = "MEDIUM"
             analysis.position_size_pct = 0.0
         elif analysis.scores.overextension_penalty <= -10:
             penalty_reasons.append("Overextension penalty is too severe for a fresh spot entry")
@@ -128,6 +144,10 @@ def decide_action(analysis: PairAnalysis, settings: Settings) -> PairAnalysis:
                 analysis.execution_dust_risk = DUST_RISK_ELEVATED
             elif tiny_notional < 12.0:
                 analysis.execution_dust_risk = DUST_RISK_WEAK
+            if analysis.planned_initial_stop_price is not None:
+                positive_reasons.append(
+                    f"Adaptive exit plan stop={analysis.planned_initial_stop_price:.4f} tp2={analysis.planned_tp2_price or 0.0:.4f} rr={analysis.reward_risk_ratio:.2f}"
+                )
     elif analysis.secondary_signal == "NEAR_BREAKOUT":
         analysis.decision_action = WATCHLIST_ALERT
         analysis.execution_stage = "IMMEDIATE_ATTENTION"
@@ -154,6 +174,18 @@ def decide_action(analysis: PairAnalysis, settings: Settings) -> PairAnalysis:
     if analysis.decision_action == BUY_APPROVED and analysis.execution_dust_risk == DUST_RISK_ELEVATED:
         penalty_reasons.append('Estimated tiny-order size has elevated dust risk')
         analysis.decision_priority = max(analysis.decision_priority - 8, 0)
+    if analysis.decision_action == BUY_APPROVED and analysis.reward_risk_ratio < settings.strategy.buy_min_reward_risk_ratio:
+        analysis.decision_action = WATCHLIST_ALERT
+        analysis.execution_stage = 'MONITOR_ONLY'
+        analysis.attention_level = 'MEDIUM'
+        analysis.position_size_pct = 0.0
+        analysis.decision_reasons = ['Reward/risk hard gate blocked BUY_APPROVED; keep on watchlist']
+    if analysis.decision_action == BUY_APPROVED and analysis.runway_upside_pct < settings.strategy.runway_min_upside_pct:
+        analysis.decision_action = WATCHLIST_ALERT
+        analysis.execution_stage = 'MONITOR_ONLY'
+        analysis.attention_level = 'MEDIUM'
+        analysis.position_size_pct = 0.0
+        analysis.decision_reasons = ['Runway hard gate blocked BUY_APPROVED; setup is too close to local highs']
     if analysis.decision_action == BUY_APPROVED and analysis.scores.execution_quality_score <= -6:
         analysis.decision_action = WATCHLIST_ALERT
         analysis.execution_stage = 'MONITOR_ONLY'
