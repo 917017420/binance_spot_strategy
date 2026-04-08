@@ -266,6 +266,11 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
         inflight_symbols=inflight_symbols,
         stale_after_seconds=1800.0,
     )
+    recent_reconcile_actions = list(runner_state.get('last_reconcile_actions') or [])
+    recent_recovery_actions = [
+        item for item in recent_reconcile_actions
+        if str(item).startswith('LIVE_INFLIGHT_RECOVERY_') or str(item).startswith('LIVE_SUBMIT_STATE_ARCHIVED_LOCAL_PREVIEW')
+    ]
 
     live_gate = derive_live_execution_gate(
         stale_count=stale_count,
@@ -322,6 +327,8 @@ def build_live_execution_snapshot(base_dir: str | Path | None = None, stale_afte
         'escalated_count': escalated_count,
         'recent_queue_event_counts': recent_event_counts,
         'archive_log_path': str(archive_log_path) if archive_log_path else None,
+        'recent_reconcile_actions': recent_reconcile_actions,
+        'recent_recovery_actions': recent_recovery_actions,
     }
 
     recent_history = {

@@ -40,6 +40,65 @@ def _parse_iso(ts: str | None):
 
 
 
+def _coerce_optional_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'true', '1', 'yes', 'y'}:
+            return True
+        if normalized in {'false', '0', 'no', 'n'}:
+            return False
+    return None
+
+
+def _summarize_submit_support(payload: dict) -> dict:
+    status = str(payload.get('last_submit_status') or '').strip().lower()
+    exchange_params = payload.get('last_exchange_params') or {}
+    call_preview = exchange_params.get('call_preview') if isinstance(exchange_params, dict) else {}
+    intent = call_preview.get('intent') if isinstance(call_preview, dict) else {}
+    intent_mode = str((intent or {}).get('mode') or '').strip().lower() or None
+    intent_submit_enabled = _coerce_optional_bool((intent or {}).get('submit_enabled'))
+
+    response = payload.get('last_response') or {}
+    response_raw = response.get('raw') if isinstance(response, dict) else {}
+    response_submit_mode = str((response_raw or {}).get('submitMode') or '').strip().lower() or None
+    response_submit_enabled = _coerce_optional_bool((response_raw or {}).get('submitEnabled'))
+
+    local_preview_signals: list[str] = []
+    if status == 'adapter_stubbed':
+        local_preview_signals.append('submit_status_adapter_stubbed')
+    if intent_submit_enabled is False:
+        local_preview_signals.append('call_preview_submit_disabled')
+    if intent_mode == 'preview_only':
+        local_preview_signals.append('call_preview_preview_only')
+    if response_submit_enabled is False:
+        local_preview_signals.append('response_submit_disabled')
+    if response_submit_mode == 'stubbed':
+        local_preview_signals.append('response_stubbed_mode')
+
+    has_live_submission_support = any(
+        (
+            intent_submit_enabled is True,
+            intent_mode == 'live_submit',
+            response_submit_enabled is True,
+            response_submit_mode == 'live_submit',
+            status == 'submitted',
+        )
+    )
+    is_local_only_preview = bool(local_preview_signals and not has_live_submission_support)
+
+    return {
+        'intent_submit_enabled': intent_submit_enabled,
+        'intent_mode': intent_mode,
+        'response_submit_enabled': response_submit_enabled,
+        'response_submit_mode': response_submit_mode,
+        'has_live_submission_support': has_live_submission_support,
+        'is_local_only_preview': is_local_only_preview,
+        'local_preview_signals': local_preview_signals,
+    }
+
+
 def load_live_submit_state(base_dir: str | Path | None = None) -> dict:
     path = _live_submit_state_path(base_dir)
     if not path.exists():
@@ -49,6 +108,7 @@ def load_live_submit_state(base_dir: str | Path | None = None) -> dict:
             'last_submit_side': None,
             'last_symbol': None,
             'last_request': None,
+            'last_exchange_params': None,
             'last_response': None,
             'last_action_intent': None,
             'last_error': None,
@@ -61,6 +121,7 @@ def load_live_submit_state(base_dir: str | Path | None = None) -> dict:
     state.setdefault('last_submit_side', None)
     state.setdefault('last_symbol', None)
     state.setdefault('last_request', None)
+    state.setdefault('last_exchange_params', None)
     state.setdefault('last_response', None)
     state.setdefault('last_action_intent', None)
     state.setdefault('last_error', None)
@@ -107,6 +168,7 @@ def summarize_live_submit_state(
         or request_metadata.get('action_intent')
         or ''
     ).strip() or None
+    submit_support = _summarize_submit_support(payload)
     updated_at = _parse_iso(payload.get('updated_at'))
     age_seconds = None
     if updated_at is not None:
@@ -185,6 +247,13 @@ def summarize_live_submit_state(
         'should_archive': should_archive,
         'archived_last_submit': payload.get('archived_last_submit'),
         'last_error': payload.get('last_error'),
+        'intent_submit_enabled': submit_support.get('intent_submit_enabled'),
+        'intent_mode': submit_support.get('intent_mode'),
+        'response_submit_enabled': submit_support.get('response_submit_enabled'),
+        'response_submit_mode': submit_support.get('response_submit_mode'),
+        'has_live_submission_support': submit_support.get('has_live_submission_support'),
+        'is_local_only_preview': submit_support.get('is_local_only_preview'),
+        'local_preview_signals': submit_support.get('local_preview_signals'),
     }
 
 
@@ -204,6 +273,7 @@ def archive_live_submit_state(state: dict, *, archive_reason: str) -> tuple[dict
             'last_submit_side',
             'last_symbol',
             'last_request',
+            'last_exchange_params',
             'last_response',
             'last_action_intent',
             'last_error',
@@ -220,6 +290,7 @@ def archive_live_submit_state(state: dict, *, archive_reason: str) -> tuple[dict
         'last_submit_side': state.get('last_submit_side'),
         'last_symbol': state.get('last_symbol'),
         'last_request': state.get('last_request'),
+        'last_exchange_params': state.get('last_exchange_params'),
         'last_response': state.get('last_response'),
         'last_action_intent': state.get('last_action_intent'),
         'last_error': state.get('last_error'),
@@ -233,6 +304,7 @@ def archive_live_submit_state(state: dict, *, archive_reason: str) -> tuple[dict
         'last_submit_side': None,
         'last_symbol': None,
         'last_request': None,
+        'last_exchange_params': None,
         'last_response': None,
         'last_action_intent': None,
         'last_error': None,

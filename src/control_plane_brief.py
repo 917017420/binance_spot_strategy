@@ -92,11 +92,15 @@ def format_control_plane_brief(base_dir: str | Path | None = None) -> str:
         f"submit_flow_terminality={submit_state_summary.get('flow_terminality')}",
         f"submit_flow_reason={submit_state_summary.get('flow_reason')}",
         f"submit_state_should_archive={submit_state_summary.get('should_archive')}",
+        f"submit_is_local_only_preview={submit_state_summary.get('is_local_only_preview')}",
         f"released_count={historical_residue.get('released_count')}",
         f"inflight_residue_count={historical_residue.get('inflight_residue_count')}",
         f"inflight_residue_partial_fill_count={inflight_residue_summary.get('partial_fill_count')}",
         f"inflight_residue_orphan_symbols={inflight_residue_summary.get('orphan_symbols')}",
         f"escalated_count={historical_residue.get('escalated_count')}",
+        f"recent_reconcile_actions_count={len(historical_residue.get('recent_reconcile_actions') or [])}",
+        f"recent_recovery_actions_count={len(historical_residue.get('recent_recovery_actions') or [])}",
+        f"latest_recovery_action={(historical_residue.get('recent_recovery_actions') or [None])[-1]}",
     ]
 
     queue_worker = runner_summary.get('queue_worker') or {}

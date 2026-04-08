@@ -8,6 +8,7 @@ from .auto_entry_gate import evaluate_auto_entry
 from .auto_runner_execution_policy import build_execution_ready_decision
 from .auto_runner_preview_samples import build_preview_sample_candidates
 from .config import load_settings
+from .control_plane_reconcile import reconcile_control_plane_state
 from .exchange import create_exchange, fetch_ohlcv_dataframe
 from .execution_candidate_queue import append_execution_candidate
 from .execution_queue_archive import archive_execution_artifacts
@@ -303,6 +304,16 @@ def run_auto_cycle(config_path: str, env_file: str, action_mode: str = 'dry_run'
         steps.append('STALE_LOOP_RECOVERY previous_running_cycle_detected')
 
     try:
+        startup_reconcile = reconcile_control_plane_state()
+        if startup_reconcile.actions:
+            steps.append(
+                'STARTUP_RECOVERY '
+                f'before={startup_reconcile.before_status} after={startup_reconcile.after_status} '
+                f'actions={len(startup_reconcile.actions)}'
+            )
+            steps.extend([f'STARTUP_RECOVERY_ACTION {item}' for item in startup_reconcile.actions])
+            state = load_runner_state()
+
         recovery_policy = build_recovery_policy(state)
         steps.append(f'RECOVERY_POLICY warm_restart_active={recovery_policy.warm_restart_active} allow_queue_enqueue={recovery_policy.allow_queue_enqueue} allow_queue_worker={recovery_policy.allow_queue_worker} clear_processed_keys_on_recovery={recovery_policy.clear_processed_keys_on_recovery} reason={recovery_policy.reason}')
         steps.extend([f'RECOVERY_NOTE {note}' for note in recovery_policy.notes])

@@ -221,3 +221,123 @@ def test_control_plane_reconcile_auto_archives_terminal_sell_submit_after_true_e
     assert submit_state['archived_last_submit']['archive_reason'] == 'post_exit_control_plane_cleanup'
     assert submit_state['archived_last_submit']['last_submit_status'] == 'closed'
     assert submit_state['archived_last_submit']['last_submit_side'] == 'sell'
+
+
+def test_control_plane_reconcile_releases_local_preview_pending_inflight_residue(tmp_path):
+    save_runner_state(
+        {
+            'last_active_trade_status': 'locked',
+            'last_active_trade_symbol': 'TRX/USDT',
+            'last_active_trade_stage': 'submit_pending',
+            'last_active_trade_lock_reason': 'live_submit_inflight_pending',
+        },
+        base_dir=tmp_path,
+    )
+    save_live_inflight_state(
+        {
+            'orders': {
+                'TRX/USDT|live|armed': {
+                    'status': 'pending_real_submit',
+                    'symbol': 'TRX/USDT',
+                    'client_order_id': 'cid-trx-preview',
+                    'updated_at': utc_now_iso(),
+                },
+            },
+            'released': {},
+            'quarantined': {},
+        },
+        base_dir=tmp_path,
+    )
+    save_live_submit_state(
+        {
+            'last_client_order_id': 'cid-trx-preview',
+            'last_submit_status': 'adapter_stubbed',
+            'last_submit_side': 'buy',
+            'last_symbol': 'TRX/USDT',
+            'last_request': {'symbol': 'TRX/USDT', 'side': 'buy'},
+            'last_exchange_params': {
+                'call_preview': {
+                    'intent': {
+                        'submit_enabled': False,
+                        'mode': 'preview_only',
+                        'reason': 'submit disabled',
+                    }
+                }
+            },
+            'last_response': {
+                'status': 'pending_real_submit',
+                'raw': {'submitMode': 'stubbed', 'submitEnabled': False},
+            },
+            'last_action_intent': 'BUY_ENTRY',
+            'last_error': None,
+        },
+        base_dir=tmp_path,
+    )
+
+    result = reconcile_control_plane_state(base_dir=tmp_path)
+    runner_state = load_runner_state(base_dir=tmp_path)
+    inflight_state = load_live_inflight_state(base_dir=tmp_path)
+    submit_state = load_live_submit_state(base_dir=tmp_path)
+
+    assert result.ok is True
+    assert result.after_status == 'idle'
+    assert any(action.startswith('LIVE_INFLIGHT_RECOVERY_RELEASED') for action in result.actions)
+    assert any(action.startswith('RUNNER_ACTIVE_TRADE_CLEARED') for action in result.actions)
+    assert inflight_state['orders'] == {}
+    assert runner_state['last_active_trade_status'] == 'idle'
+    assert runner_state['last_active_trade_symbol'] is None
+    assert runner_state['last_active_trade_lock_reason'] is None
+    assert submit_state['archived_last_submit']['archive_reason'] == 'local_preview_submit_residue'
+    assert submit_state['last_submit_status'] is None
+    assert submit_state['last_symbol'] is None
+
+
+def test_control_plane_reconcile_keeps_pending_inflight_when_submit_supports_live_order(tmp_path):
+    save_live_inflight_state(
+        {
+            'orders': {
+                'BTC/USDT|live|armed': {
+                    'status': 'pending_real_submit',
+                    'symbol': 'BTC/USDT',
+                    'client_order_id': 'cid-btc-live',
+                    'updated_at': utc_now_iso(),
+                },
+            },
+            'released': {},
+            'quarantined': {},
+        },
+        base_dir=tmp_path,
+    )
+    save_live_submit_state(
+        {
+            'last_client_order_id': 'cid-btc-live',
+            'last_submit_status': 'submitted',
+            'last_submit_side': 'buy',
+            'last_symbol': 'BTC/USDT',
+            'last_request': {'symbol': 'BTC/USDT', 'side': 'buy'},
+            'last_exchange_params': {
+                'call_preview': {
+                    'intent': {
+                        'submit_enabled': True,
+                        'mode': 'live_submit',
+                        'reason': 'live enabled',
+                    }
+                }
+            },
+            'last_response': {
+                'status': 'submitted',
+                'raw': {'submitMode': 'live_submit', 'submitEnabled': True},
+            },
+            'last_action_intent': 'BUY_ENTRY',
+            'last_error': None,
+        },
+        base_dir=tmp_path,
+    )
+
+    result = reconcile_control_plane_state(base_dir=tmp_path)
+    inflight_state = load_live_inflight_state(base_dir=tmp_path)
+
+    assert result.ok is True
+    assert result.after_status == 'locked'
+    assert not any(action.startswith('LIVE_INFLIGHT_RECOVERY_RELEASED') for action in result.actions)
+    assert 'BTC/USDT|live|armed' in inflight_state['orders']

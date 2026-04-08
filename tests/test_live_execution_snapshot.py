@@ -177,3 +177,22 @@ def test_live_execution_snapshot_prefers_clearing_stop_signal_when_runtime_is_bl
     assert snapshot.summary['runtime']['start_blocked_by_stop_signal'] is True
     assert snapshot.summary['next_action_plan']['code'] == 'clear_stop_signal_before_restart'
     assert snapshot.summary['next_action_plan']['recommended_command'] == 'python3 -m src.main clear-runner-stop'
+
+
+def test_live_execution_snapshot_surfaces_recent_recovery_actions(tmp_path):
+    save_runner_state(
+        {
+            'last_reconcile_actions': [
+                'LIVE_INFLIGHT_RECOVERY_RELEASED count=1 keys=[TRX/USDT|live|armed] reason=local_preview_submit_residue',
+                'LIVE_SUBMIT_STATE_ARCHIVED_LOCAL_PREVIEW status=adapter_stubbed symbol=TRX/USDT',
+            ],
+        },
+        base_dir=tmp_path,
+    )
+
+    snapshot = build_live_execution_snapshot(base_dir=tmp_path)
+    historical_residue = snapshot.summary['historical_residue']
+
+    assert historical_residue['recent_reconcile_actions'][0].startswith('LIVE_INFLIGHT_RECOVERY_RELEASED')
+    assert historical_residue['recent_reconcile_actions'][1].startswith('LIVE_SUBMIT_STATE_ARCHIVED_LOCAL_PREVIEW')
+    assert historical_residue['recent_recovery_actions'][0].startswith('LIVE_INFLIGHT_RECOVERY_RELEASED')
