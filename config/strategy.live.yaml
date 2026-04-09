@@ -63,7 +63,7 @@ auto_entry:
     lenient: 0
   scan_reference_equity_quote: 1000.0
   scan_tiny_live_notional_quote: 6.0
-  live_order_quote_amount: 10.0
+  live_order_quote_amount: 30.0
 
 output:
   directory: data/output
