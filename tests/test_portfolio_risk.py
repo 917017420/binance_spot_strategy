@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.models import IndicatorSnapshot, PairAnalysis, RiskPlan, ScoreBreakdown
-from src.portfolio_risk import build_portfolio_risk_snapshot
+from src.portfolio_risk import build_portfolio_risk_snapshot, portfolio_risk_checks
 from src.positions_store import save_positions
 from src.models import Position
 from src.utils import utc_now_iso
@@ -103,3 +103,59 @@ def test_portfolio_risk_snapshot_ignores_simulated_positions(tmp_path, monkeypat
 
     assert snapshot['open_positions'] == 1
     assert snapshot['same_symbol_open'] is False
+
+
+def test_portfolio_risk_near_max_not_reported_for_empty_portfolio_at_cap_one(monkeypatch):
+    candidate = _candidate('ADA/USDT')
+    monkeypatch.setattr('src.portfolio_risk.load_live_active_positions', lambda: [])
+
+    checks, reasons, snapshot, downgrade_reasons, soft_risk_points = portfolio_risk_checks(
+        candidate,
+        max_open_positions=1,
+        max_total_exposure_pct=30.0,
+        bucket_weight_overrides={},
+    )
+
+    assert checks['within_open_position_limit'] is True
+    assert snapshot['open_positions'] == 0
+    assert "open position limit reached" not in reasons
+    assert "portfolio is near max open positions" not in downgrade_reasons
+    assert soft_risk_points == 0
+
+
+def test_portfolio_risk_near_max_reported_when_one_slot_left(monkeypatch):
+    candidate = _candidate('ADA/USDT')
+    live_positions = [_position('BTC/USDT', 'pos-live', tags=['live_fill_reconciled'])]
+    monkeypatch.setattr('src.portfolio_risk.load_live_active_positions', lambda: live_positions)
+
+    checks, reasons, snapshot, downgrade_reasons, soft_risk_points = portfolio_risk_checks(
+        candidate,
+        max_open_positions=2,
+        max_total_exposure_pct=30.0,
+        bucket_weight_overrides={},
+    )
+
+    assert checks['within_open_position_limit'] is True
+    assert snapshot['open_positions'] == 1
+    assert "open position limit reached" not in reasons
+    assert "portfolio is near max open positions" in downgrade_reasons
+    assert soft_risk_points >= 1
+
+
+def test_portfolio_risk_hard_blocks_when_open_position_cap_hit_at_one(monkeypatch):
+    candidate = _candidate('ADA/USDT')
+    live_positions = [_position('BTC/USDT', 'pos-live', tags=['live_fill_reconciled'])]
+    monkeypatch.setattr('src.portfolio_risk.load_live_active_positions', lambda: live_positions)
+
+    checks, reasons, snapshot, downgrade_reasons, soft_risk_points = portfolio_risk_checks(
+        candidate,
+        max_open_positions=1,
+        max_total_exposure_pct=30.0,
+        bucket_weight_overrides={},
+    )
+
+    assert checks['within_open_position_limit'] is False
+    assert snapshot['open_positions'] == 1
+    assert "open position limit reached" in reasons
+    assert "portfolio is near max open positions" not in downgrade_reasons
+    assert soft_risk_points == 0

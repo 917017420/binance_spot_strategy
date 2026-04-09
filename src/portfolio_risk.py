@@ -53,7 +53,7 @@ def portfolio_risk_checks(candidate: PairAnalysis, max_open_positions: int, max_
 
     if not checks["within_open_position_limit"]:
         reasons.append("open position limit reached")
-    elif snapshot["open_positions"] == max_open_positions - 1:
+    elif snapshot["open_positions"] > 0 and snapshot["open_positions"] == max_open_positions - 1:
         downgrade_reasons.append("portfolio is near max open positions")
         soft_risk_points += 1
 
