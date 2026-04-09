@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-from src.runner_state import clear_runner_stop_signal, compact_runner_state, derive_runner_runtime_status, load_runner_stop_signal, mark_runner_cycle_started, runner_stop_signal_path, save_runner_stop_signal
+from src.runner_state import clear_runner_stop_signal, compact_runner_state, derive_runner_runtime_status, load_runner_state, load_runner_stop_signal, mark_runner_cycle_started, runner_stop_signal_path, save_runner_state, save_runner_stop_signal
 
 
 def test_mark_runner_cycle_started_detects_stale_running_cycle():
@@ -115,3 +116,54 @@ def test_derive_runner_runtime_status_detects_stale_resident_loop_and_stop_block
     assert blocked_runtime['stop_signal_age_seconds'] == 0.0
     assert blocked_runtime['operator_hint'] == 'Clear the stop signal before the next supervised runtime start.'
     assert blocked_runtime['recommended_command'] == 'python3 -m src.main clear-runner-stop'
+
+
+def test_load_runner_state_recovers_salvageable_object_with_trailing_garbage(tmp_path):
+    state_path = tmp_path / 'runner_state.json'
+    state_path.write_text('{"last_loop_mode":"resident","last_loop_cycle_count":3}{"dangling":', encoding='utf-8')
+
+    state = load_runner_state(base_dir=tmp_path)
+
+    assert state['last_loop_mode'] == 'resident'
+    assert state['last_loop_cycle_count'] == 3
+    recovery = state.get('runner_state_file_recovery')
+    assert isinstance(recovery, dict)
+    assert recovery.get('recovered') is True
+    assert recovery.get('strategy') == 'salvaged_prefix_object'
+
+
+def test_load_runner_state_falls_back_to_defaults_for_irrecoverable_json(tmp_path):
+    state_path = tmp_path / 'runner_state.json'
+    state_path.write_text('this is not json', encoding='utf-8')
+
+    state = load_runner_state(base_dir=tmp_path)
+
+    assert state['last_cycle_stage'] == 'idle'
+    assert state['last_loop_status'] == 'idle'
+    recovery = state.get('runner_state_file_recovery')
+    assert isinstance(recovery, dict)
+    assert recovery.get('recovered') is True
+    assert recovery.get('strategy') == 'defaults'
+
+
+def test_save_runner_state_round_trip_writes_valid_json(tmp_path):
+    saved_path = save_runner_state(
+        {
+            'last_loop_mode': 'resident',
+            'last_loop_cycle_count': 5,
+            'last_monitor_messages': [f'msg-{idx}' for idx in range(14)],
+        },
+        base_dir=tmp_path,
+    )
+
+    payload = json.loads(saved_path.read_text(encoding='utf-8'))
+    loaded = load_runner_state(base_dir=tmp_path)
+
+    assert payload['last_loop_mode'] == 'resident'
+    assert payload['last_loop_cycle_count'] == 5
+    assert payload['last_monitor_messages'] == [f'msg-{idx}' for idx in range(4, 14)]
+    assert isinstance(payload.get('updated_at'), str) and payload['updated_at']
+    assert loaded['last_loop_mode'] == 'resident'
+    assert loaded['last_loop_cycle_count'] == 5
+    assert loaded['last_monitor_messages'] == [f'msg-{idx}' for idx in range(4, 14)]
+    assert not list(tmp_path.glob('*.tmp'))

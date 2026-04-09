@@ -7,7 +7,7 @@ from src.live_execution_snapshot import build_live_execution_snapshot
 from src.live_fill_reconcile import apply_live_order_fact
 from src.models import Position
 from src.positions_store import save_positions
-from src.runner_state import save_runner_state, save_runner_stop_signal
+from src.runner_state import load_runner_state, save_runner_state, save_runner_stop_signal
 from src.utils import utc_now_iso
 
 
@@ -196,3 +196,19 @@ def test_live_execution_snapshot_surfaces_recent_recovery_actions(tmp_path):
     assert historical_residue['recent_reconcile_actions'][0].startswith('LIVE_INFLIGHT_RECOVERY_RELEASED')
     assert historical_residue['recent_reconcile_actions'][1].startswith('LIVE_SUBMIT_STATE_ARCHIVED_LOCAL_PREVIEW')
     assert historical_residue['recent_recovery_actions'][0].startswith('LIVE_INFLIGHT_RECOVERY_RELEASED')
+
+
+def test_live_execution_snapshot_survives_corrupted_runner_state(tmp_path):
+    state_path = tmp_path / 'runner_state.json'
+    state_path.write_text('not valid json', encoding='utf-8')
+
+    snapshot = build_live_execution_snapshot(base_dir=tmp_path)
+    runtime = snapshot.summary['runtime']
+    recovered_state = load_runner_state(base_dir=tmp_path)
+
+    assert runtime['status'] == 'never_started'
+    assert runtime['mode'] == 'idle'
+    recovery = recovered_state.get('runner_state_file_recovery')
+    assert isinstance(recovery, dict)
+    assert recovery.get('recovered') is True
+    assert recovery.get('strategy') == 'defaults'

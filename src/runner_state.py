@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from .utils import ensure_directory, parse_utc_iso, seconds_since_iso, utc_now_i
 DEFAULT_EXECUTION_DIR = Path(__file__).resolve().parent.parent / 'data' / 'execution'
 RUNNER_STATE_FILE = DEFAULT_EXECUTION_DIR / 'runner_state.json'
 RUNNER_STOP_FILE = DEFAULT_EXECUTION_DIR / 'runner_stop.json'
+RUNNER_STATE_RECOVERY_KEY = 'runner_state_file_recovery'
 
 
 def _default_runner_state() -> dict:
@@ -54,15 +57,146 @@ def runner_stop_signal_path(base_dir: str | Path | None = None) -> Path:
     return (root / RUNNER_STOP_FILE.name).resolve()
 
 
+def _build_runner_state_recovery(
+    *,
+    path: Path,
+    strategy: str,
+    reason: str,
+    error: Exception | str | None = None,
+) -> dict:
+    message = str(error) if error is not None else None
+    if isinstance(message, str) and len(message) > 240:
+        message = message[:237] + '...'
+    recovery = {
+        'recovered': True,
+        'strategy': strategy,
+        'reason': reason,
+        'path': str(path),
+        'recovered_at': utc_now_iso(),
+    }
+    if message:
+        recovery['error'] = message
+    return recovery
+
+
+def _merge_runner_state(payload: dict | None = None, *, recovery: dict | None = None) -> dict:
+    merged = {
+        **_default_runner_state(),
+        **(payload or {}),
+    }
+    if recovery is not None:
+        merged[RUNNER_STATE_RECOVERY_KEY] = recovery
+    return merged
+
+
+def _salvage_runner_state_payload(raw_text: str) -> tuple[dict | None, str]:
+    stripped = raw_text.lstrip()
+    if not stripped:
+        return None, 'empty_file'
+    decoder = json.JSONDecoder()
+    try:
+        payload, offset = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None, 'json_decode_error'
+    if not isinstance(payload, dict):
+        return None, 'top_level_not_object'
+    trailing = stripped[offset:].strip()
+    if trailing:
+        return payload, 'trailing_data'
+    return payload, 'parsed_prefix_object'
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    ensure_directory(path.parent)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f'.{path.name}.',
+        suffix='.tmp',
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(dir_fd)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def load_runner_state(base_dir: str | Path | None = None) -> dict:
     path = _runner_state_path(base_dir)
     if not path.exists():
         return _default_runner_state()
-    state = {
-        **_default_runner_state(),
-        **json.loads(path.read_text(encoding='utf-8')),
-    }
-    return state
+    try:
+        raw_text = path.read_text(encoding='utf-8')
+    except Exception as exc:
+        return _merge_runner_state(
+            recovery=_build_runner_state_recovery(
+                path=path,
+                strategy='defaults',
+                reason='state_file_read_failed',
+                error=exc,
+            )
+        )
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        salvage_payload, salvage_reason = _salvage_runner_state_payload(raw_text)
+        if salvage_payload is not None:
+            return _merge_runner_state(
+                salvage_payload,
+                recovery=_build_runner_state_recovery(
+                    path=path,
+                    strategy='salvaged_prefix_object',
+                    reason=salvage_reason,
+                    error=exc,
+                ),
+            )
+        return _merge_runner_state(
+            recovery=_build_runner_state_recovery(
+                path=path,
+                strategy='defaults',
+                reason=salvage_reason,
+                error=exc,
+            )
+        )
+    except Exception as exc:
+        return _merge_runner_state(
+            recovery=_build_runner_state_recovery(
+                path=path,
+                strategy='defaults',
+                reason='json_parse_failed',
+                error=exc,
+            )
+        )
+
+    if isinstance(payload, dict):
+        return _merge_runner_state(payload)
+    return _merge_runner_state(
+        recovery=_build_runner_state_recovery(
+            path=path,
+            strategy='defaults',
+            reason='top_level_not_object',
+        )
+    )
 
 
 def compact_runner_state(state: dict) -> dict:
@@ -251,9 +385,7 @@ def save_runner_state(state: dict, base_dir: str | Path | None = None) -> Path:
         **compact_runner_state(state),
         'updated_at': utc_now_iso(),
     }
-    tmp_path = path.with_suffix(path.suffix + '.tmp')
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp_path.replace(path)
+    _atomic_write_json(path, payload)
     return path
 
 
@@ -298,9 +430,7 @@ def save_runner_stop_signal(reason: str = 'manual_stop', *, base_dir: str | Path
         'requested_at': utc_now_iso(),
         'reason': reason or 'manual_stop',
     }
-    tmp_path = path.with_suffix(path.suffix + '.tmp')
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp_path.replace(path)
+    _atomic_write_json(path, payload)
     return path
 
 
